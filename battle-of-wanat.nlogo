@@ -1,49 +1,100 @@
 turtles-own [ base-speed ]
+globals [
+  taliban-starting-points
+  ana-starting-points
+  us-starting-points
+]
+breed [us-army us-solider]
+breed [ana-army ana-solider]
+breed [taliban-army taliban-solider]
 
 to setup
   clear-all                                 ;; wipe any old world
-  set-patch-size 10                         ;; one patch == one pixel
+  set-patch-size 6                         ;; one patch == one pixel
   import-pcolors "battlefield.png"
-;  create-turtles 10 [
-;    setxy random-xcor random-ycor
-;    set base-speed 1; normal speed = 1
-;    set shape "square"
-;    set size 1.5  ; patch size = 1, so turtle covers one patch
-;  ]
 
-  ;star is us coalition
-  ;orange triangle is insurgent riflemen
-  ;yellow triangle is insurgent rocketeer
-  ;
-  create-turtles 0;
-  crt 1 [
-    setxy 28 39
-    set color red
-    set base-speed 1;
-    set size 1.5
-    set shape "star"
+  set taliban-starting-points patches at-points [
+    [41 -48] [42 -48] [43 -48] [44 -48] [45 -48]
+    [41 -49] [42 -49] [43 -49] [44 -49] [45 -49]
+    [41 -50] [42 -50] [43 -50] [44 -50] [45 -50]
+    [41 -51] [42 -51] [43 -51] [44 -51] [45 -51]
+
+    [37 -52] [38 -52] [39 -52] [40 -52] [41 -52]
+    [37 -53] [38 -53] [39 -53] [40 -53] [41 -53]
+
+    [33 -59] [34 -59] [35 -59] [36 -59]
+    [33 -60] [34 -60] [35 -60] [36 -60]
+    [33 -61] [34 -61] [35 -61] [36 -61]
+    [33 -62] [34 -62] [35 -62] [36 -62]
+
+    [64 -44] [65 -44] [66 -44] [67 -44] [68 -44]
+    [64 -45] [65 -45] [66 -45] [67 -45] [68 -45]
+    [64 -46] [65 -46] [66 -46] [67 -46] [68 -46]
+    [64 -47] [65 -47] [66 -47] [67 -47] [68 -47]
+
+    [73 -63] [74 -63]
+    [73 -64] [74 -64]
+    [73 -65] [74 -65]
+
+    [77 -65] [78 -65]
+    [77 -66] [78 -66]
+    [77 -67] [78 -67] [79 -67] [80 -67] [81 -67]
+
+    [77 -69] [78 -69] [79 -69] [80 -69]
+    [77 -70] [78 -70] [79 -70] [80 -70]
+
+    [76 -71] [77 -71]
+    [76 -72] [77 -72]
   ]
-  crt 1 [
-    setxy 28 38
-    set color red
-    set base-speed 1;
-    set size 1.5
-    set shape "star"
+
+  set ana-starting-points patches at-points [
+    [48 -56] [49 -56] [50 -56] [51 -56] [52 -56] [53 -56]
+    [48 -57] [49 -57] [50 -57] [51 -57] [52 -57] [53 -57]
   ]
-  crt 1 [
-    setxy 28 37
-    set color red
-    set base-speed 1;
-    set size 1.5
-    set shape "star"
+
+  set us-starting-points patches at-points [
+    [50 -58] [51 -58] [52 -58] [53 -58]
+
+    [53 -59] [54 -59] [55 -59]
+    [53 -60] [54 -60] [55 -60]
+    [53 -61] [54 -61] [55 -61]
+
+    [50 -62] [51 -62] [52 -62] [53 -62] [54 -62] [55 -62] [56 -62]
+    [50 -63] [51 -63] [52 -63] [53 -63] [54 -63] [55 -63] [56 -63]
+    [50 -64] [51 -64] [52 -64] [53 -64] [54 -64] [55 -64] [56 -64]
+    [50 -65] [51 -65] [52 -65] [53 -65]
+
+    [47 -61] [48 -61]
+    [47 -62] [48 -62]
+
+    [60 -58] [61 -58]
+    [60 -59] [61 -59]
   ]
-  crt 1 [
-    setxy 28 36
+
+  create-taliban-army 103 [
+    move-to one-of taliban-starting-points
     set color red
-    set base-speed 1;
-    set size 1.5
-    set shape "star"
+    set size 1
+    set shape "square"
+    set base-speed 1
   ]
+
+  create-ana-army 10 [
+    move-to one-of ana-starting-points
+    set color green
+    set size 1
+    set shape "square"
+    set base-speed 1
+  ]
+
+  create-us-army 72 [
+    move-to one-of us-starting-points
+    set color blue
+    set size 1
+    set shape "square"
+    set base-speed 1
+  ]
+
   reset-ticks
 end
 
@@ -79,11 +130,11 @@ end
 GRAPHICS-WINDOW
 210
 10
-868
-669
+992
+793
 -1
 -1
-10.0
+6.0
 1
 10
 1
@@ -94,9 +145,9 @@ GRAPHICS-WINDOW
 1
 1
 0
-64
+128
+-128
 0
-64
 0
 0
 1
