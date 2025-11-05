@@ -28,6 +28,7 @@ globals [
   taliban-starting-points
   ana-starting-points
   us-starting-points
+  us-resupply-points
   taliban_casualties
   allied_casualties
 ]
@@ -116,10 +117,18 @@ to setup
     [60 -59] [61 -59]
   ]
 
+  set us-resupply-points patches at-points [
+    [53 -63] [61 -58]
+  ]
   
   ask us-starting-points [
     set is_COP true
     set pcolor 115
+  ]
+  
+  ask us-resupply-points [
+    set is_ressuply true
+    set pcolor green
   ]
   
   create-taliban-army 103 [
@@ -130,8 +139,18 @@ to setup
     set base-speed 1
     set role "taliban"
     initialize-agent-parameters
-    set accuracy 0.6
-    set weapon_range 400
+    ;; Randomly include Rocketeers
+    if random-float 1.0 < 0.08 [
+      set weapon "RPG"
+      set accuracy 0.4
+      set shape "triangle"
+      set ammo 5
+      set color orange
+      set weapon_range 900
+  ]
+    
+    set accuracy 0.2
+    set weapon_range 100
     
   ]
 
@@ -195,7 +214,7 @@ to go
     ]
     ;; Attack
     attack
-    move
+    move_default
   ]
   tick
 end
@@ -226,6 +245,16 @@ to move ; turtle procedure
 end
 
 to taliban_ammo_out
+  if weapon = "RPG" [
+    set weapon "Rifle"
+    set accuracy 0.2
+    set weapon_range 200
+    set ammo 20
+    set color red
+    set shape "square"
+    stop
+  ]
+  
   
     if pxcor = max-pxcor or pxcor = min-pxcor or
        pycor = max-pycor or pycor = min-pycor [
@@ -340,6 +369,17 @@ to attack
   ]
 end
 
+
+to move_default
+  let cop-patches patches with [ is_COP = true ]
+  if any? cop-patches [
+    let target min-one-of cop-patches [ distance myself ]
+    face target
+  ]
+  move
+  stop
+  
+end
 
 
 to-report speed-factor [c]
