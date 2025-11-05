@@ -18,6 +18,12 @@
 ;;  current-state    ;; String  - unit's current state
 ]
 
+patches-own [ 
+  is_COP ;;
+  is_ressuply
+  terrain_height
+]
+
 globals [
   taliban-starting-points
   ana-starting-points
@@ -110,6 +116,12 @@ to setup
     [60 -59] [61 -59]
   ]
 
+  
+  ask us-starting-points [
+    set is_COP true
+    set pcolor 115
+  ]
+  
   create-taliban-army 103 [
     move-to one-of taliban-starting-points
     set color red
@@ -125,11 +137,13 @@ to setup
 
   create-ana-army 10 [
     move-to one-of ana-starting-points
-    set color green
+    ;;set color green
+    set color blue
     set size 1
     set shape "square"
     set base-speed 1
-    set role "ana"
+    ;;set role "ana"
+    set role "allied"
     initialize-agent-parameters
   ]
 
@@ -139,7 +153,7 @@ to setup
     set size 1
     set shape "square"
     set base-speed 1
-    set role "us"
+    set role "allied"
     initialize-agent-parameters
     set weapon_range 600
     set accuracy 0.9
@@ -207,17 +221,70 @@ to move ; turtle procedure
 
     ;; 4) Move, still keeping inside
     if can-move? (base-speed * ahead-speed) [
-      fd base-speed * ahead-speed
+      fd base-speed * ahead-speed 
     ]
 end
 
 to taliban_ammo_out
-  stop
+  
+    if pxcor = max-pxcor or pxcor = min-pxcor or
+       pycor = max-pycor or pycor = min-pycor [
+      die
+      stop
+    ]
+  
+    let dist-right   (max-pxcor - pxcor)
+    let dist-left    (pxcor - min-pxcor)
+    let dist-top     (max-pycor - pycor)
+    let dist-bottom  (pycor - min-pycor)
+
+    let nearest_border_x pxcor
+    let nearest_border_y pycor
+  
+    if dist-right <= dist-left and dist-right <= dist-top and dist-right <= dist-bottom [
+      set nearest_border_x max-pxcor
+    ]
+    if dist-left < dist-right and dist-left <= dist-top and dist-left <= dist-bottom [
+      set nearest_border_x min-pxcor
+    ]
+    if dist-top < dist-right and dist-top < dist-left and dist-top <= dist-bottom [
+      set nearest_border_y max-pycor
+    ]
+    if dist-bottom < dist-right and dist-bottom < dist-left and dist-bottom < dist-top [
+      set nearest_border_y min-pycor
+    ]
+  
+    face patch nearest_border_x nearest_border_y
+
+    move
+ 
+    ;; if we reach the border after moving, disappear
+    if pxcor = max-pxcor or pxcor = min-pxcor or
+       pycor = max-pycor or pycor = min-pycor [
+      die
+    ]
+  
+    stop
   
 end
 
 to allied_ammo_out
+  if [is_ressuply] of patch-here = true [
+    set ammo 20
+    stop
+  ]
+  let resupply-patches patches with [ is_ressuply = true ]
+    if any? resupply-patches [
+
+      let nearest min-one-of resupply-patches [ distance myself ]
+      face nearest
+      move
+    if [is_ressuply] of patch-here = true [
+      set ammo 20
+    ]
+  ]
   stop
+
 end
 
 to check_survival 
@@ -242,10 +309,10 @@ to attack
   let enemies nobody
   if role = "taliban" [
     set enemies turtles with [
-      is_alive and (role = "us" or role = "ana")
+      is_alive and role = "allied"
     ]
   ]
-  if role = "us" or role = "ana" [
+  if role = "allied" [
     set enemies turtles with [
       is_alive and role = "taliban"
     ]
@@ -256,6 +323,7 @@ to attack
   if not any? enemies_in_range [ 
     ;; Move if no enemies in range
     move
+    stop
   ]
   
   ;; randomly select a target
@@ -270,8 +338,8 @@ to attack
   if random-float 1.0 < weapon_malfunction_chance [
     set weapon_operational false
   ]
-  
 end
+
 
 
 to-report speed-factor [c]
