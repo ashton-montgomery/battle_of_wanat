@@ -16,6 +16,10 @@
   is_alive    ;; Boolean - Whether the agent is alive
 ;;  initial-state    ;; String  - state rolled when injured
 ;;  current-state    ;; String  - unit's current state
+  weapon_max_accuracy       ;; max hit probability at optimal range
+  weapon_min_range          ;; distance at which max accuracy applies
+  weapon_max_range          ;; maximum effective range
+  weapon_accuracy_dropoff   ;; accuracy penalty per patch
 ]
 
 patches-own [ 
@@ -51,10 +55,31 @@ to initialize-agent-parameters
   set posture "Upright"
   set suppression 0
   set is_alive true
+  set-weapon-parameters
 ;;  set initial-state "None"
 ;;  set current-state "Normal"
 end
 
+to set-weapon-parameters  ;; turtle procedure
+  ;; set max hit probability based on unit type
+  if role = "allied" [ set weapon_max_accuracy 0.9 ]
+  if role = "taliban" [ set weapon_max_accuracy 0.8 ]
+
+  ;; set min range for near-perfect hits
+  if weapon = "Rifle" [ set weapon_min_range 50 ]
+  if weapon = "RPG" [ set weapon_min_range 30 ]
+  if weapon_min_range = 0 [ set weapon_min_range 20 ]
+
+  ;; set max effective range
+  set weapon_max_range weapon_range
+
+  ;; calculate accuracy dropoff per patch
+  ifelse (weapon_max_range - weapon_min_range) > 0 [
+    set weapon_accuracy_dropoff (weapon_max_accuracy - 0.05) / (weapon_max_range - weapon_min_range)
+  ] [
+    set weapon_accuracy_dropoff 0.0
+  ]
+end
 
 to setup
   clear-all
@@ -391,14 +416,27 @@ to attack
     ]
   ]
   
-  ;; Check if it was a hit
-  if random-float 1.0 < accuracy - cover_mod [
-    ask target [ set is_alive false ]
-  ]
-  ;; Check if weapon malfunctioned
-  if random-float 1.0 < weapon_malfunction_chance [
-    set weapon_operational false
-  ]
+ ;; distance-based accuracy calculation
+let dist-to-target distance target
+let shooter-accuracy accuracy
+let min-range weapon_min_range
+let dropoff weapon_accuracy_dropoff
+
+let effective-accuracy shooter-accuracy - cover_mod
+if dist-to-target > min-range [
+  let distance-penalty (dist-to-target - min-range) * dropoff
+  set effective-accuracy max list (effective-accuracy - distance-penalty) 0.0
+]
+
+;; attempt shot
+if random-float 1.0 < effective-accuracy [
+  ask target [ set is_alive false ]
+]
+
+;; Check if weapon malfunctioned
+if random-float 1.0 < weapon_malfunction_chance [
+  set weapon_operational false
+]
 end
 
 
