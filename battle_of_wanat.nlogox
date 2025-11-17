@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<model version="NetLogo 7.0.0-beta2" snapToGrid="true">
-  <code><![CDATA[turtles-own [
+<model version="NetLogo 7.0.2" snapToGrid="true">
+  <code><![CDATA[  turtles-own [
   base-speed
   unit-id          ;; Integer - unique ID number of unit
   role             ;; String  - unit type/role
@@ -412,14 +412,24 @@ to attack
 
   ;; restrict to enemies within range
   let enemies_in_range enemies in-radius range_in_patches
-  if not any? enemies_in_range [ 
+  
+  let visible-enemies no-turtles
+  ask enemies_in_range [
+    ;; 'myself' is the shooter, 'self' is this potential target
+    if [clear-line-of-sight? self] of myself [
+      set visible-enemies (turtle-set visible-enemies self)
+    ]
+  ]
+  
+  
+  
+  if not any? visible-enemies [ 
     ;; Move if no enemies in range
     move
     stop
   ]
   
-  ;; randomly select a target
-  let target one-of enemies_in_range
+  let target min-one-of visible-enemies [ distance myself ]
   ;; fire one shot
   set ammo ammo - 1
   
@@ -466,6 +476,30 @@ to move_default
   
 end
 
+
+to-report clear-line-of-sight? [tgt]
+  let dist distance tgt
+  let steps ceiling dist
+  if steps <= 1 [
+    report true
+  ]
+  let dx1 (([xcor] of tgt) - xcor) / steps
+  let dy1 (([ycor] of tgt) - ycor) / steps
+
+  let i 1
+  while [i < steps] [
+   
+    let p patch (xcor + dx1 * i) (ycor + dy1 * i)
+    if p != nobody [
+      let c [pcolor] of p
+      if (c = 4) or (c = yellow) [
+        report false
+      ]
+    ]
+    set i i + 1
+  ]
+  report true
+end
 
 to-report speed-factor [c]
   if c = 0 [ report 1.0 ]  ; slope 0° - 10°
