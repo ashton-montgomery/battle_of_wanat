@@ -1,25 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
 <model version="NetLogo 7.0.2" snapToGrid="true">
-  <code><![CDATA[  turtles-own [
-  base-speed
+  <code><![CDATA[globals [
+  taliban-starting-points
+  ana-starting-points
+  us-starting-points
+  us-resupply-points
+  taliban_casualties
+  allied_casualties
+  cover-points
+  impassible-elevation-points
+  weapon-specs     ;; list of weapon definitions
+  range-bands      ;; ["min" "cqc" "short" "medium" "long" "extreme"]
+  training-levels  ;;[float,float,float,float,float,float] - a list of six floats to assign positive / negative modifers for different range brackets
+  tick-seconds
+  battle-duration-ticks
+  cas-arrival-tick
+  taliban-start-count
+  allied-start-count
+]
+
+
+turtles-own [
+  
   unit-id          ;; Integer - unique ID number of unit
-  role             ;; String  - unit type/role
-  weapon           ;; String  - current equipped weapon
-  weapon_range     ;; Integer - effective range of weapon
-  weapon_operational ;; Boolean - Whether the weapon is functional
-  weapon_malfunction_chance ;; Float - probability of malfunction on each shot
-  ammo             ;; Integer - ammo in current weapon
-  accuracy         ;; Float   - accuracy of fire
-  speed            ;; Float   - current movement speed
-  posture          ;; String  - how unit is positioned
-  suppression      ;; Float   - how heavily the unit is being fired upon
-  is_alive    ;; Boolean - Whether the agent is alive
-;;  initial-state    ;; String  - state rolled when injured
-;;  current-state    ;; String  - unit's current state
-  weapon_max_accuracy       ;; max hit probability at optimal range
-  weapon_min_range          ;; distance at which max accuracy applies
-  weapon_max_range          ;; maximum effective range
-  weapon_accuracy_dropoff   ;; accuracy penalty per patch
+  role             ;; String  - "Allied" or "Taliban" to set group agent belongs to
+  weapon-design    ;; Striing, name of weapon for pulling specs
+  weapon-training      ;; List[Float] modifiers for engaging with the six range brackets 
+  weapon-operational   ;; Boolean - Whether the weapon is functional
+  base-speed ;; Integer - sets base speed of agent moving across patches
+  posture ;; String - specifies what position the agent is in, changes hit prob along with other stuff
+  current-weapon-ammo             ;; Integer - ammo on hand
+  current-weapon-heat 
+  suppression      ;; Float   - how badly the agent is being shot at
+  hit_points ;; Float - HP value that handles hits/damage to agent (allowing for wounding shots)
+  max-hit-points ;; Int - Maximum HP that an agent can have
+  nominal-speed ;; Int - Temp var for use in speed calculations
+  mag-rounds ;; Int - how many rounds are in the mag currently
+  reload-ticks ;; Int - how many ticks it takes to reload
+  jam-ticks ;; Int - how many ticks it takes to clear a jam/malfunction
+  morale ;; Float - 'Morale level' that helps determine behaviour/when it's time for taliban to run
 ]
 
 patches-own [ 
@@ -29,149 +48,144 @@ patches-own [
   is_cover
 ]
 
-globals [
-  taliban-starting-points
-  ana-starting-points
-  us-starting-points
-  us-resupply-points
-  taliban_casualties
-  allied_casualties
-  cover-points
-  impassible-elevation-points
-]
+
 breed [us-army us-solider]
-breed [ana-army ana-solider]
 breed [taliban-army taliban-solider]
 
-to initialize-agent-parameters
+to initialize-agent-parameters [faction wep-name training-index]
   set unit-id who
-  set weapon "Rifle"
-  set weapon_range 0
-  set weapon_operational true
-  set weapon_malfunction_chance 0.05
-  set ammo 20
-  set accuracy 1.0
-  set speed base-speed
-  set posture "Upright"
-  set suppression 0
-  set is_alive true
-  set-weapon-parameters
-;;  set initial-state "None"
-;;  set current-state "Normal"
-end
+  set role faction
+  set weapon-design wep-name
 
-to set-weapon-parameters  ;; turtle procedure
-  ;; set max hit probability based on unit type
-  if role = "allied" [ set weapon_max_accuracy 0.9 ]
-  if role = "taliban" [ set weapon_max_accuracy 0.8 ]
-
-  ;; set min range for near-perfect hits
-  if weapon = "Rifle" [ set weapon_min_range 50 ]
-  if weapon = "RPG" [ set weapon_min_range 30 ]
-  if weapon_min_range = 0 [ set weapon_min_range 20 ]
-
-  ;; set max effective range
-  set weapon_max_range weapon_range
-
-  ;; calculate accuracy dropoff per patch
-  ifelse (weapon_max_range - weapon_min_range) > 0 [
-    set weapon_accuracy_dropoff (weapon_max_accuracy - 0.05) / (weapon_max_range - weapon_min_range)
-  ] [
-    set weapon_accuracy_dropoff 0.0
+  set weapon-training item training-index training-levels
+  if length weapon-training < length range-bands [
+    set weapon-training sentence weapon-training n-values (length range-bands - length weapon-training) [0]
   ]
+
+  set weapon-operational true
+
+  ;; movement
+  set nominal-speed base-speed
+  set posture "Upright"
+
+  ;; combat state
+  set current-weapon-heat 0
+  set suppression 0
+  set max-hit-points 100
+  set hit_points max-hit-points
+  set morale (ifelse-value (role = "allied") [1.0] [0.9])
+
+  ;; ammo model including both reserve ammo + magazine ammo
+  let load weapon-fighting-load weapon-design
+  set current-weapon-ammo load
+  set mag-rounds min (list (weapon-mag-size weapon-design) current-weapon-ammo)
+  set current-weapon-ammo current-weapon-ammo - mag-rounds
+
+  set reload-ticks 0
+  set jam-ticks 0
 end
 
+
+  
 to setup
   clear-all
-  set-patch-size 10
-  resize-world 0 88 -56 0
+  set-patch-size 6
+  resize-world 0 127 -127 0
   paint-battlefield battlefield-data
-  reset-ticks
-  
+
+    ask patches [
+    set is_COP false
+    set is_ressuply false
+    set is_cover false
+  ]
+  reset-ticks 
+  set training-levels [
+    [0 0    0    0    0    0   ]  ;; basic
+    [0 0.10 0.06 0.03 0.01 0.00]  ;; allied
+    [0 0.06 0.03 0.01 0.00 0.00]  ;; taliban
+  ]
+
+  set range-bands ["min" "cqc" "short" "medium" "long" "extreme"]
+  set weapon-specs [            
+ ;; ["name" , [minimum,cqc,short,medium,long,extreme (distance brackets, meters),max-rounds-per-tick, heat-per-shot, damage, fighting-load]
+    ["M4" [0 25 100 300 500 800] 12 1 1 360]
+    ;;["M249" [0 25 100 300 500 800] 12 1 1 360]
+    ;;["PKM" [0 25 100 300 500 800] 12 1 1 360]
+    ;;["M4A1" [0 25 100 300 500 800] 12 1 1 360]
+    ;;["XM7" [0 25 100 300 500 800] 12 1 1 360]
+    ["AK47" [0 25 75 250 400 600] 8 1 1 210]
+  ]
+
+    
   set taliban-starting-points patches at-points [
-    [28 -9] [29 -9] [30 -9] [31 -9] [32 -9]
-    [28 -10] [29 -10] [30 -10] [31 -10] [32 -10]
-    [28 -11] [29 -11] [30 -11] [31 -11] [32 -11]
-    [28 -12] [29 -12] [30 -12] [31 -12] [32 -12]
+    [41 -48] [42 -48] [43 -48] [44 -48] [45 -48]
+    [41 -49] [42 -49] [43 -49] [44 -49] [45 -49]
+    [41 -50] [42 -50] [43 -50] [44 -50] [45 -50]
+    [41 -51] [42 -51] [43 -51] [44 -51] [45 -51]
 
-    [24 -13] [25 -13] [26 -13] [27 -13] [28 -13]
-    [24 -14] [25 -14] [26 -14] [27 -14] [28 -14]
+    [37 -52] [38 -52] [39 -52] [40 -52] [41 -52]
+    [37 -53] [38 -53] [39 -53] [40 -53] [41 -53]
 
-    [20 -20] [21 -20] [22 -20] [23 -20]
-    [20 -21] [21 -21] [22 -21] [23 -21]
-    [20 -22] [21 -22] [22 -22] [23 -22]
-    [20 -23] [21 -23] [22 -23] [23 -23]
+    [33 -59] [34 -59] [35 -59] [36 -59]
+    [33 -60] [34 -60] [35 -60] [36 -60]
+    [33 -61] [34 -61] [35 -61] [36 -61]
+    [33 -62] [34 -62] [35 -62] [36 -62]
 
-    [51 -5] [52 -5] [53 -5] [54 -5] [55 -5]
-    [51 -6] [52 -6] [53 -6] [54 -6] [55 -6]
-    [51 -7] [52 -7] [53 -7] [54 -7] [55 -7]
-    [51 -8] [52 -8] [53 -8] [54 -8] [55 -8]
+    [64 -44] [65 -44] [66 -44] [67 -44] [68 -44]
+    [64 -45] [65 -45] [66 -45] [67 -45] [68 -45]
+    [64 -46] [65 -46] [66 -46] [67 -46] [68 -46]
+    [64 -47] [65 -47] [66 -47] [67 -47] [68 -47]
 
-    [60 -24] [61 -24]
-    [60 -25] [61 -25]
-    [60 -26] [61 -26]
+    [73 -63] [74 -63]
+    [73 -64] [74 -64]
+    [73 -65] [74 -65]
 
-    [64 -26] [65 -26]
-    [64 -27] [65 -27]
-    [64 -28] [65 -28] [66 -28] [67 -29] [67 -30]
+    [77 -65] [78 -65]
+    [77 -66] [78 -66]
+    [77 -67] [78 -67] [79 -67] [80 -67] [81 -67]
 
-    [64 -30] [65 -30] [66 -30] [67 -30]
-    [64 -31] [65 -31] [66 -31] [67 -31]
+    [77 -69] [78 -69] [79 -69] [80 -69]
+    [77 -70] [78 -70] [79 -70] [80 -70]
 
-    [63 -32] [64 -32]
-    [63 -33] [64 -33]
+    [76 -71] [77 -71]
+    [76 -72] [77 -72]
   ]
 
   set ana-starting-points patches at-points [
-    [35 -17] [36 -17] [37 -17] [38 -17] [39 -17] [40 -17]
-    [35 -18] [36 -18] [37 -18] [38 -18] [39 -18] [40 -18]
+    [48 -56] [49 -56] [50 -56] [51 -56] [52 -56] [53 -56]
+    [48 -57] [49 -57] [50 -57] [51 -57] [52 -57] [53 -57]
   ]
 
   set us-starting-points patches at-points [
-    [37 -19] [38 -19] [39 -19] [40 -19]
+    [50 -58] [51 -58] [52 -58] [53 -58]
 
-    [40 -20] [41 -20] [42 -20]
-    [40 -21] [41 -21] [42 -21]
-    [40 -22] [41 -22] [42 -22]
+    [53 -59] [54 -59] [55 -59]
+    [53 -60] [54 -60] [55 -60]
+    [53 -61] [54 -61] [55 -61]
 
-    [37 -23] [38 -23] [39 -23] [40 -23] [41 -23] [42 -23] [43 -23]
-    [37 -24] [38 -24] [39 -24] [40 -24] [41 -24] [42 -24] [43 -24]
-    [37 -25] [38 -25] [39 -25] [40 -25] [41 -25] [42 -25] [43 -25]
-    [37 -26] [38 -26] [39 -26] [40 -26]
+    [50 -62] [51 -62] [52 -62] [53 -62] [54 -62] [55 -62] [56 -62]
+    [50 -63] [51 -63] [52 -63] [53 -63] [54 -63] [55 -63] [56 -63]
+    [50 -64] [51 -64] [52 -64] [53 -64] [54 -64] [55 -64] [56 -64]
+    [50 -65] [51 -65] [52 -65] [53 -65]
 
-    [34 -22] [35 -22]
-    [34 -23] [35 -23]
+    [47 -61] [48 -61]
+    [47 -62] [48 -62]
 
-    [47 -19] [48 -19]
-    [47 -20] [48 -20]
+    [60 -58] [61 -58]
+    [60 -59] [61 -59]
   ]
 
   set us-resupply-points patches at-points [
-    [40 -24] [41 -24]
+    [53 -63] [61 -58]
   ]
   
   set cover-points patches at-points [
-     [33.00 -23.00]
-  [33.00 -21.00]
-  [35.00 -26.00]
-  [35.00 -24.00]
-  [35.00 -18.00]
-  [36.00 -27.00]
-  [40.00 -27.00]
-  [41.00 -26.00]
-  [41.00 -18.00]
-  [43.00 -25.00]
-  [44.00 -22.00]
-  [38.00 -17.00]
+    [49 -66] [53 -66] [54 -65] [56 -64] [57 -61] [48 -65] [48 -63] [46 -62] [46 -60]
+    [51 -56] [48 -57] [54 -57]
   ]
   
   set impassible-elevation-points patches at-points [
-     [31.0 -18.0]
-  [26.0 -36.0]
-  [33.0 -15.0]
-  [50.0 -16.0]
-  [60.0 -38.0]
-  [52.0 -51.0]
+    [44 -57] [39 -75] [46 -54] [63 -55] [73 -77] [65 -90] 
   ]
   
   ask cover-points [
@@ -192,6 +206,7 @@ to setup
     set is_ressuply true
     set pcolor green
   ]
+
   
   create-taliban-army 103 [
     move-to one-of taliban-starting-points
@@ -199,46 +214,26 @@ to setup
     set size 1
     set shape "square"
     set base-speed 1
-    set role "taliban"
-    initialize-agent-parameters
-    ;; Randomly include Rocketeers
-    if random-float 1.0 < 0.08 [
-      set weapon "RPG"
-      set accuracy 0.4
-      set shape "triangle"
-      set ammo 5
-      set color orange
-      set weapon_range 900
-  ]
-    
-    set accuracy 0.2
-    set weapon_range 100
-    
+    initialize-agent-parameters "taliban" "AK47" 2
   ]
 
-  create-ana-army 10 [
-    move-to one-of ana-starting-points
-    ;;set color green
-    set color blue
-    set size 1
-    set shape "square"
-    set base-speed 1
-    ;;set role "ana"
-    set role "allied"
-    initialize-agent-parameters
-  ]
 
-  create-us-army 72 [
+  create-us-army 82 [
     move-to one-of us-starting-points
     set color blue
     set size 1
     set shape "square"
+    set weapon-design "M4"
     set base-speed 1
-    set role "allied"
-    initialize-agent-parameters
-    set weapon_range 600
-    set accuracy 0.9
+    initialize-agent-parameters "allied" allied_weapon_selection 1
   ]
+  
+
+  set tick-seconds 30
+  set cas-arrival-tick 120          ;; 1 hour @ 30s/tick
+  set taliban-start-count count turtles with [role = "taliban"]
+  set allied-start-count  count turtles with [role = "allied"]
+
   set taliban_casualties 0
   set allied_casualties 0
   reset-ticks
@@ -259,68 +254,68 @@ to paint-battlefield [data]  ;; data = list of rows, top->bottom; each row is li
   ]
 end
 
+
 to go
+  ;; stop when CAS arrives or all of one side is dead
+  if ticks >= cas-arrival-tick [ stop ]
+  if taliban_casualties >= 103 [ stop ]
+  if allied_casualties >= 82 [ stop ]
+  
   ask turtles [
     check_survival
-    if ammo <= 0 [
-      if role = "taliban"[
-        taliban_ammo_out
-      ]
-      if role = "allied"[
-        allied_ammo_out
-      ]
-    ]
-    ;; Unjam Weapon
-    if not weapon_operational [
-      set weapon_operational true
+
+    ;; weapon unjaming
+    if jam-ticks > 0 [
+      set jam-ticks jam-ticks - 1
+      if jam-ticks = 0 [ set weapon-operational true ]
       stop
     ]
-    ;; Attack
+
+    ;; out of ammo
+    if (mag-rounds <= 0) and (current-weapon-ammo <= 0) [
+      if role = "taliban" [ taliban_ammo_out ]
+      if role = "allied"  [ allied_ammo_out  ]
+      stop
+    ]
+
     attack
     move_default
   ]
+
   tick
 end
 
-; Agent Movement Behavior
-to move ; turtle procedure
-    ;; 1) If the next step leaves the world, turn back instead of crashing
+; Movement Behavior
+to move
     if not can-move? 1 [
-      set heading heading + 180 + (random 61 - 30)  ;; bounce off edge with a little jitter
-      stop                                          ;; this turtle’s turn ends for this tick
+      set heading heading + 180 + (random 61 - 30)  ;; bounce off edge of map if agent hits it 
+      stop                                          
     ]
 
-    ;; 2) Safe to look ahead now — patch-ahead 1 is guaranteed to be a patch
     let ahead-patch patch-ahead 1
     let ahead-speed speed-factor [pcolor] of ahead-patch
 
-    ;; 3) Impassable patch ahead? try a new direction
     if ahead-speed = 0[
       rt random 90
       lt random 90
       stop
     ]
-
-    ;; 4) Move, still keeping inside
+  
     if can-move? (base-speed * ahead-speed) [
       fd base-speed * ahead-speed 
     ]
 end
 
 to taliban_ammo_out
-  if weapon = "RPG" [
-    set weapon "Rifle"
-    set accuracy 0.2
-    set weapon_range 200
-    set ammo 20
+  if weapon-design = "RPG" [
+    set weapon-design "Rifle"
+    set current-weapon-ammo 210
     set color red
     set shape "square"
     stop
   ]
-  
-  
-    if pxcor = max-pxcor or pxcor = min-pxcor or
-       pycor = max-pycor or pycor = min-pycor [
+      if pxcor = max-pxcor or pxcor = min-pxcor or
+      pycor = max-pycor or pycor = min-pycor [
       die
       stop
     ]
@@ -360,28 +355,204 @@ to taliban_ammo_out
   
 end
 
-to allied_ammo_out
-  if [is_ressuply] of patch-here = true [
-    set ammo 20
-    stop
-  ]
-  let resupply-patches patches with [ is_ressuply = true ]
-    if any? resupply-patches [
+to combat-maintain
+  ;; reduce suppression level and decrease heat val 
+  set suppression suppression * 0.85
+  set current-weapon-heat current-weapon-heat * 0.90
+  if current-weapon-heat < 0.01 [ set current-weapon-heat 0 ]
 
-      let nearest min-one-of resupply-patches [ distance myself ]
-      face nearest
-      move
-    if [is_ressuply] of patch-here = true [
-      set ammo 20
-    ]
-  ]
-  stop
+  ;; posture based on suppression level
+  if suppression > 3 [ set posture "Prone" ]
+  if suppression <= 3 and posture = "Prone" and random-float 1 < 0.15 [ set posture "Crouch" ]
+  if suppression < 1 and posture = "Crouch" and random-float 1 < 0.10 [ set posture "Upright" ]
 
+  update-morale
+
+  ;; speed penalties (wounds + posture + suppression)
+  let hp-frac hit_points / max-hit-points
+  let wound-mult (ifelse-value hp-frac < 0.30 [0.45] [ifelse-value hp-frac < 0.60 [0.70] [1.0]])
+  let stance-mult (ifelse-value posture = "Prone" [0.50] [ifelse-value posture = "Crouch" [0.80] [1.0]])
+  let sup-mult max (list 0.25 (1 - 0.08 * suppression))
+  set base-speed nominal-speed * wound-mult * stance-mult * sup-mult
 end
 
+to update-morale
+  ;; Sets updated morale for units
+  let casualty-pressure 0
+
+  if role = "taliban" [
+    let denom max (list 1 taliban-start-count)
+    set casualty-pressure (taliban_casualties / denom)
+  ]
+
+  if role = "allied" [
+    let denom max (list 1 allied-start-count)
+    set casualty-pressure (allied_casualties / denom)
+  ]
+  set morale clamp (morale - 0.01 * (suppression / 10) - 0.04 * casualty-pressure) 0 1
+end
+
+to-report should-withdraw?
+  if role != "taliban" [ report false ]
+  if morale < 0.25 [ report true ]
+  let denom max (list 1 taliban-start-count)
+  if (taliban_casualties / denom) > 0.35 [ report true ]
+
+  report false
+end
+
+to seek-cover
+  if patch-here != nobody [
+    if [is_cover] of patch-here or [pcolor] of patch-here = white [ stop ]
+  ]
+  let cover-patches patches in-radius 4 with [is_cover or pcolor = white]
+  if any? cover-patches [
+    let best min-one-of cover-patches [distance myself]
+    face best
+    move
+  ]
+end
+
+to start-reload
+  if current-weapon-ammo <= 0 [ stop ]
+  set reload-ticks weapon-reload-ticks weapon-design
+end
+
+to finish-reload
+  let to-load min (list (weapon-mag-size weapon-design) current-weapon-ammo)
+  set mag-rounds to-load
+  set current-weapon-ammo current-weapon-ammo - to-load
+end
+
+to jam-check
+  ;; Check if the weapon jams bc of heat 
+  if current-weapon-heat <= 25 [ stop ]
+  let prob clamp ((current-weapon-heat - 25) * 0.01) 0 0.15
+  if random-float 1 < prob [
+    set weapon-operational false
+    set jam-ticks 2 + random 3
+  ]
+end
+
+to-report hit-prob [tgt range-m band]
+  let base (ifelse-value weapon-design = "M4" [0.10] [0.08])
+  let train training-bonus band
+  let rmult range-mult band
+  let supmult clamp (1 - 0.10 * suppression) 0.2 1.0
+  let heatmult clamp (1 - 0.03 * current-weapon-heat) 0.2 1.0
+  let cover ( [my-cover] of tgt )
+  let stance (ifelse-value posture = "Prone" [0.90] [ifelse-value posture = "Crouch" [1.00] [1.05]])
+
+  report clamp ( (base + train) * rmult * supmult * heatmult * stance * (1 - cover) ) 0 0.55
+end
+
+to receive-fire [wep did-hit? range-m]
+  set suppression clamp (suppression + 0.12) 0 10
+
+  if did-hit? [
+    let dmg base-damage wep range-m
+    set dmg dmg * (1 - my-cover)
+    set hit_points hit_points - dmg
+
+    set suppression clamp (suppression + 0.6 + dmg / 40) 0 10
+    
+    ;; If wounded moderately
+    if hit_points < max-hit-points * 0.60 [ set posture "Crouch" ]
+    ;; If wounded badly
+    if hit_points < max-hit-points * 0.30 [ set posture "Prone"  ]
+
+    ;; Critical hit, instant kill
+    if random-float 1 < 0.03 and dmg > 25 [ set hit_points 0 ]
+  ]
+end
+
+to-report my-cover
+  let c 0
+  if patch-here != nobody [
+    if [is_cover] of patch-here [ set c c + 0.35 ]
+    if [pcolor] of patch-here = white [ set c c + 0.20 ]
+  ]
+  if posture = "Prone"  [ set c c + 0.20 ]
+  if posture = "Crouch" [ set c c + 0.10 ]
+  report min (list 0.75 c)
+end
+
+to-report base-damage [wep range-m]
+  ;; TODO: Update to include M249, XM7, M4A1
+  let scale (ifelse-value wep = "M4" [22] [24])
+  if range-m > 250 [ set scale scale * 0.85 ]
+  report scale * (0.6 + random-float 0.8)
+end
+
+to-report training-bonus [band]
+  let idx position band range-bands
+  if idx = false [ report 0 ]
+  if idx >= length weapon-training [ report 0 ]
+  report item idx weapon-training
+end
+
+to-report range-mult [band]
+  if band = "cqc"     [ report 1.20 ]
+  if band = "short"   [ report 1.00 ]
+  if band = "medium"  [ report 0.65 ]
+  if band = "long"    [ report 0.35 ]
+  if band = "extreme" [ report 0.18 ]
+  report 0
+end
+
+to-report clamp [x low high]
+  report max (list low (min (list high x)))
+end
+
+
+to-report weapon-max-rounds-per-tick [wep] report item 2 (weapon-spec wep) end
+
+
+to-report weapon-mag-size [wep]
+  if wep = "M4"   [ report 30 ]
+  if wep = "AK47" [ report 30 ]
+  if wep = "M249" [ report 200]
+  if wep = "XM7" [ report 30]
+  report 30
+end
+
+to-report weapon-reload-ticks [wep]
+  if wep = "M4"   [ report 2 ]
+  if wep = "AK47" [ report 3 ]
+  if wep = "M249"   [ report 5 ]
+  if wep = "XM7" [ report 2 ]
+  
+  report 3
+end
+
+
+to allied_ammo_out
+  if [is_ressuply] of patch-here [
+    do-resupply
+    stop
+  ]
+
+  let resupply-patches patches with [is_ressuply]
+  if any? resupply-patches [
+    let nearest min-one-of resupply-patches [distance myself]
+    face nearest
+    move
+    if [is_ressuply] of patch-here [ do-resupply ]
+  ]
+  stop
+end
+
+to do-resupply
+  let load weapon-fighting-load weapon-design
+  set current-weapon-ammo load
+  set mag-rounds min (list (weapon-mag-size weapon-design) current-weapon-ammo)
+  set current-weapon-ammo current-weapon-ammo - mag-rounds
+end
+
+
 to check_survival 
-  if not is_alive [
-      ;; Increment casualty count for side, remove agent
+  if (hit_points <= 0) [
+    ;; Remove agent, increment count
       if role = "allied" [
         set allied_casualties allied_casualties + 1          
       ]
@@ -393,77 +564,102 @@ to check_survival
       stop
     ]
 end
-  
+
 to attack
-  if (not is_alive) [ stop ]
-  let range_in_patches weapon_range / (sqrt 7.8125)
-  ;; figure out who counts as an enemy
-  let enemies nobody
-  if role = "taliban" [
-    set enemies turtles with [
-      is_alive and role = "allied"
-    ]
-  ]
-  if role = "allied" [
-    set enemies turtles with [
-      is_alive and role = "taliban"
-    ]
+  if hit_points <= 0 [ stop ]
+
+  combat-maintain
+
+  ;; Taliban withdrawal once low morale
+  if should-withdraw? [
+    set posture "Upright"
+    taliban_ammo_out   ;; Has taliban units run for the hills
+    stop
   ]
 
-  ;; restrict to enemies within range
-  let enemies_in_range enemies in-radius range_in_patches
-  
+  ;; reload?
+  if reload-ticks > 0 [
+    set reload-ticks reload-ticks - 1
+    if reload-ticks = 0 [ finish-reload ]
+    stop
+  ]
+
+  ;; check if weapon jammed
+  if not weapon-operational [ stop ]
+
+  ;; don't raise up if suppressed (most likely)
+  if suppression > 4 and random-float 1 < 0.8 [
+    set posture "Prone"
+    seek-cover
+    stop
+  ]
+
+  let enemies nobody
+  if role = "taliban" [ set enemies turtles with [hit_points > 0 and role = "allied"] ]
+  if role = "allied"  [ set enemies turtles with [hit_points > 0 and role = "taliban"] ]
+
+  ;; get weapon range in patches
+  let max-range-m last (weapon-brackets weapon-design)
+  let range-in-patches max-range-m / 7.8125
+
+  ;; determine visible enemies
+  let enemies-in-range enemies in-radius range-in-patches
   let visible-enemies no-turtles
-  ask enemies_in_range [
-    ;; 'myself' is the shooter, 'self' is this potential target
+  ask enemies-in-range [
     if [clear-line-of-sight? self] of myself [
       set visible-enemies (turtle-set visible-enemies self)
     ]
   ]
-  
-  
-  
-  if not any? visible-enemies [ 
-    ;; Move if no enemies in range
-    move
+
+  ;; if no targets, prone and go for cover if shot at
+  if not any? visible-enemies [
+    if suppression > 3 [
+      set posture "Prone"
+      seek-cover
+      stop
+    ]
     stop
   ]
+
+  let target min-one-of visible-enemies [distance myself]
+  let engagement-range-m (distance target) * 7.8125
+  let band weapon-range-band weapon-design engagement-range-m
+  if band = "beyond" [ stop ]
+
+  ;; burst sizing (big bursts if enemy is close)
+  let burst 1
+  if engagement-range-m < 75  [ set burst 3 ]
+  if engagement-range-m >= 75 and engagement-range-m < 250 [ set burst 2 ]
   
-  let target min-one-of visible-enemies [ distance myself ]
-  ;; fire one shot
-  set ammo ammo - 1
-  
-  ;;check what patch the turtle is on
-  let cover_mod 0
-  if patch-here != nobody[
-    if [pcolor] of patch-here = white[
-      set cover_mod 0.1
+  let shots min (list burst (weapon-max-rounds-per-tick weapon-design) mag-rounds)
+
+  ;; if empty mag, reload
+  if shots <= 0 [
+    start-reload
+    stop
+  ]
+
+  ;; shoot
+  repeat shots [
+    jam-check
+    if not weapon-operational [ stop ]
+
+    set mag-rounds mag-rounds - 1
+    set current-weapon-heat current-weapon-heat + weapon-heat-per-shot weapon-design
+
+    let p hit-prob target engagement-range-m band
+    let did-hit? (random-float 1 < p)
+
+    ask target [ receive-fire weapon-design did-hit? engagement-range-m ]
+
+    ;; if mag dry mid-burst, start reload
+    if mag-rounds <= 0 [
+      if current-weapon-ammo > 0 [ start-reload ]
+      stop
     ]
   ]
-  
- ;; distance-based accuracy calculation
-let dist-to-target distance target
-let shooter-accuracy accuracy
-let min-range weapon_min_range
-let dropoff weapon_accuracy_dropoff
-
-let effective-accuracy shooter-accuracy - cover_mod
-if dist-to-target > min-range [
-  let distance-penalty (dist-to-target - min-range) * dropoff
-  set effective-accuracy max list (effective-accuracy - distance-penalty) 0.0
-]
-
-;; attempt shot
-if random-float 1.0 < effective-accuracy [
-  ask target [ set is_alive false ]
-]
-
-;; Check if weapon malfunctioned
-if random-float 1.0 < weapon_malfunction_chance [
-  set weapon_operational false
-]
+  stop
 end
-
 
 to move_default
   let cop-patches patches with [ is_COP = true ]
@@ -503,82 +699,226 @@ end
 
 to-report speed-factor [c]
   if c = 0 [ report 1.0 ]  ; slope 0° - 10°
-  if c = 1 and c > 2.4 [ report 0.45 ]  ; slope 11° - 20°
-  if c = 2 and c > 4.1 [ report 0.17 ]  ; slope 21° - 30°
-  if c = 3 and c > 4.7 [ report 0.06 ]  ; slope 31° - 40°
-  if c = 4 or c = yellow [ report 0 ]  ; slope 41°; agent will try to go around this patch
+  if c = 1 [ report 0.45 ]  ; slope 11° - 20°
+  if c = 2 [ report 0.17 ]  ; slope 21° - 30°
+  if c = 3  [ report 0.06 ]  ; slope 31° - 40°
+  if c = 4 or c = yellow [ report 0 ]  ; slope 41°; impassable
   report 1.0 ; default
+end
+
+;;Logic for accessing specs of an agent's current weapon
+
+to-report weapon-spec [wep-name]  ;; gets the weapon from string
+  let matches filter [ ws -> item 0 ws = wep-name ] weapon-specs
+  report first matches
+end
+
+to-report weapon-brackets [wep-name]
+  let spec weapon-spec wep-name
+  report item 1 spec
+end
+
+to-report weapon-rpt [wep-name]
+  let spec weapon-spec wep-name
+  report item 2 spec
+end
+
+to-report weapon-heat-per-shot [wep-name]
+  let spec weapon-spec wep-name
+  report item 3 spec
+end
+
+to-report weapon-damage [wep-name]
+  let spec weapon-spec wep-name
+  report item 4 spec
+end
+
+to-report weapon-fighting-load [wep-name]
+  let spec weapon-spec wep-name
+  report item 5 spec
+end
+
+to-report weapon-range-band [wep-name target-range]
+  let ranges weapon-brackets wep-name
+  if ranges = nobody [ report nobody ]
+
+  if target-range > last ranges [
+    report "beyond"
+  ]
+
+  let range-indx 0
+  while [range-indx < length ranges and target-range > item range-indx ranges] [
+    set range-indx range-indx + 1
+  ]
+  
+  if range-indx >= length range-bands [
+    report "beyond"
+  ]
+
+  report item range-indx range-bands
 end
 
 to-report battlefield-data
   report
 [
-  [3 2 3 2 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 1 2 3 0 0 0 0 0 0 1 1 1 1 1 1 1 0 0 0 0 1 1 0 0 0 0 1 0 1 1 2 1 1 1 1 0 0 1 1 1 1 1 1 0 0 1 0 1 0 0 1 1 1 1 1 1 0 1 1 1 1 1 2 2 1 0] 
-  [3 3 3 3 2 2 3 3 2 3 3 3 3 3 3 2 2 2 2 3 3 2 2 2 3 2 0 0 0 0 0 1 1 1 1 1 1 0 1 0 0 0 1 1 1 0 1 0 1 1 1 1 2 1 1 1 1 0 1 1 1 0 0 1 1 1 1 0 1 0 1 0 1 1 1 0 0 1 1 1 1 0 1 1 1 1 1 2 1] 
-  [3 3 3 2 2 2 3 3 3 3 4 3 3 3 3 2 2 2 2 2 3 3 3 3 3 1 1 0 0 1 1 0 1 1 1 1 2 1 1 0 1 1 0 1 1 1 1 0 1 1 1 2 2 2 1 0 1 1 0 0 0 0 1 1 0 1 1 0 1 1 0 1 0 1 1 0 1 0 1 1 1 0 1 2 1 1 2 2 2] 
-  [1 3 3 3 2 1 2 3 3 3 3 3 3 3 3 3 2 2 1 3 3 3 2 1 0 0 0 0 1 1 0 0 1 1 1 2 2 3 3 1 1 1 1 1 1 1 1 1 1 1 1 3 1 2 1 1 1 0 0 1 1 0 1 0 1 1 1 1 0 0 1 1 1 1 1 1 0 0 1 1 1 0 1 1 1 1 2 1 2] 
-  [2 1 2 3 3 3 3 3 3 3 3 3 3 3 3 2 2 2 3 3 3 2 0 0 0 1 1 0 0 1 0 1 1 2 2 3 3 2 2 1 2 2 1 2 3 2 1 1 0 1 1 3 2 2 1 0 0 1 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 1 0 1 0 2 1 1 2 1 1 1] 
-  [3 2 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 0 0 0 1 2 1 1 1 1 0 0 1 3 2 1 1 1 2 2 2 1 1 1 1 1 2 1 2 0 1 2 3 2 1 1 1 1 0 0 1 0 1 1 1 1 1 1 1 1 1 1 1 2 1 2 1 1 0 1 1 1 2 1 1 3 1 2 3] 
-  [3 1 2 2 2 2 2 2 2 2 2 2 1 2 2 3 3 3 3 3 1 0 0 1 1 3 2 1 1 1 1 1 1 1 1 1 1 1 1 2 1 1 1 1 1 1 1 1 0 2 0 1 3 3 2 0 1 1 0 1 0 1 1 0 1 1 1 2 1 1 1 1 1 1 2 1 1 1 1 0 1 1 3 2 1 2 1 1 3] 
-  [3 3 2 2 3 3 3 2 2 1 3 3 2 3 1 1 2 2 2 1 1 0 1 3 2 3 2 0 0 0 2 1 1 2 1 1 1 0 0 1 1 1 1 1 1 1 1 1 0 1 1 1 1 3 3 0 1 1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1 3 3 1 1 1 0 0 1 2 3 2 2 2 2 1 0] 
-  [3 2 3 3 3 2 3 3 3 2 2 2 3 3 2 1 1 2 2 1 1 0 0 1 1 2 1 0 0 1 2 1 0 0 1 0 0 0 1 0 1 1 1 1 1 1 1 1 1 1 1 2 1 1 2 2 1 1 1 1 1 1 1 1 1 1 1 1 1 0 1 1 1 2 2 3 1 2 1 1 3 3 3 1 1 3 2 2 1] 
-  [2 1 2 0 2 1 1 2 3 3 2 2 2 2 3 2 1 2 1 1 0 0 0 1 0 1 0 0 0 1 2 0 0 0 0 1 0 0 0 1 1 1 0 0 1 1 1 1 1 1 1 2 1 1 2 3 3 3 0 1 1 1 1 1 1 1 1 1 1 1 1 1 0 1 3 2 2 3 2 2 3 2 3 2 0 1 1 3 1] 
-  [2 2 2 1 1 2 2 2 2 1 1 3 1 3 2 2 2 1 0 0 1 0 1 1 0 1 0 1 1 3 2 0 0 1 1 0 0 0 0 0 0 1 0 1 1 1 2 1 1 1 1 1 1 1 1 2 2 3 2 1 1 1 1 1 1 1 1 1 1 1 2 1 1 2 2 1 1 2 3 3 1 2 2 2 3 2 3 3 3] 
-  [3 2 1 1 1 1 3 2 2 1 3 2 1 3 3 1 2 1 0 0 0 1 1 0 0 1 1 1 3 3 2 0 1 1 0 1 0 0 0 0 0 1 0 0 1 1 1 1 1 1 1 1 0 1 1 2 1 3 3 2 1 1 2 1 1 2 1 1 1 0 1 1 2 2 3 2 0 0 1 1 1 0 1 2 2 2 3 3 2] 
-  [3 2 3 1 1 1 2 2 2 2 2 2 2 3 2 2 1 1 0 0 1 1 0 0 0 1 2 2 2 2 2 0 1 1 0 0 0 1 1 0 1 1 1 1 1 1 0 1 1 1 1 1 1 0 1 0 1 3 2 3 3 2 2 1 1 2 1 1 1 1 2 3 3 3 2 3 1 3 1 1 1 0 0 1 1 2 3 3 2] 
-  [3 3 3 1 1 1 2 2 2 1 2 2 1 2 3 2 0 1 0 1 1 1 1 0 0 1 2 3 1 2 1 1 1 0 0 0 1 1 2 1 1 1 2 1 2 1 1 1 1 1 1 1 1 1 1 0 1 1 1 3 2 1 2 2 1 1 1 0 1 1 2 2 3 3 0 2 3 2 1 1 0 1 0 1 1 1 1 1 2] 
-  [3 3 2 1 2 2 2 2 1 1 2 2 1 2 3 1 0 1 0 1 1 0 1 0 0 1 2 3 2 1 1 1 1 0 1 1 1 1 2 2 2 2 2 3 1 1 1 1 1 1 1 1 0 1 1 1 1 2 1 3 3 2 1 2 1 0 1 1 0 1 1 2 2 3 1 3 3 3 2 1 0 0 1 1 1 1 1 1 1] 
-  [3 2 2 1 2 3 2 3 2 1 2 1 1 3 3 1 0 0 1 1 0 0 0 0 2 2 3 2 1 1 1 0 0 1 1 2 2 2 2 1 1 1 0 1 3 2 1 1 1 1 1 2 1 0 1 1 1 2 1 3 2 3 1 2 1 0 0 1 1 1 1 1 3 2 1 2 3 2 3 1 1 0 1 1 1 1 1 0 1] 
-  [1 2 3 2 2 2 3 3 1 1 2 2 2 3 2 1 0 1 1 1 0 0 0 0 1 3 3 2 1 1 1 0 3 3 2 2 1 1 1 2 0 0 2 2 2 2 3 2 2 1 2 1 1 1 1 1 1 1 0 3 3 3 1 1 1 0 1 1 1 1 0 1 0 1 1 1 2 1 3 2 0 1 0 1 0 1 1 1 1] 
-  [3 1 2 3 2 3 3 3 2 1 2 2 2 3 1 1 0 1 1 1 0 0 0 0 2 3 2 1 1 1 1 1 3 2 1 3 3 3 3 3 1 1 1 1 1 2 2 2 2 2 2 1 1 2 1 1 1 2 0 3 3 3 1 1 2 0 1 2 2 1 2 0 1 0 1 1 3 2 2 1 1 1 0 0 1 0 0 1 0] 
-  [3 2 2 3 3 3 3 3 3 2 2 2 3 2 0 1 0 1 0 1 0 0 1 0 2 3 3 2 1 2 1 1 1 2 0 1 1 2 1 0 0 1 1 1 1 1 1 1 1 3 3 1 1 2 1 3 1 1 0 3 3 3 1 2 1 1 1 1 1 2 2 2 1 3 3 1 3 1 1 1 1 1 1 1 1 1 1 1 1] 
-  [2 1 2 2 2 2 3 3 3 3 2 2 2 1 0 0 0 0 1 0 0 0 1 1 2 3 3 3 2 1 0 0 2 1 1 1 1 0 1 0 0 0 1 0 1 1 1 3 1 3 3 2 2 1 1 1 1 1 1 2 3 3 1 2 1 1 1 1 1 0 1 1 1 1 1 1 1 1 1 1 1 0 1 2 2 2 1 1 1] 
-  [1 2 2 2 3 2 3 3 3 3 3 2 2 1 0 0 0 0 1 1 1 1 0 2 3 2 3 2 1 0 1 0 2 1 1 0 0 1 0 0 1 0 0 1 2 1 1 1 1 3 3 2 3 1 2 2 1 1 1 3 2 2 1 2 1 1 1 1 1 1 2 1 3 3 1 1 2 3 1 1 2 2 1 1 2 1 1 2 2] 
-  [2 2 3 2 3 2 3 3 3 3 3 3 2 1 0 0 0 1 1 0 1 1 0 1 3 2 1 1 1 0 0 0 1 1 0 1 0 1 1 1 1 1 1 0 0 0 0 0 1 3 3 3 3 2 3 3 1 0 0 2 2 3 1 1 1 2 1 1 1 1 1 1 3 1 3 2 2 1 1 1 3 3 2 1 1 2 1 1 1] 
-  [3 2 2 2 3 2 2 3 3 3 3 2 3 3 0 0 0 1 1 0 0 1 1 2 3 3 2 1 2 0 1 2 0 1 0 0 0 1 0 0 1 1 1 1 1 1 0 0 1 1 2 3 3 2 3 3 1 1 1 2 2 2 1 1 1 1 1 2 2 2 2 3 4 3 3 2 1 1 2 3 3 3 2 2 2 2 2 1 1] 
-  [1 2 2 2 3 2 3 3 2 3 3 2 2 2 0 1 1 1 1 0 0 1 0 1 3 3 1 1 0 1 1 1 0 0 0 0 0 0 1 1 1 1 0 1 1 1 1 1 0 1 1 2 3 2 2 3 3 1 1 1 2 2 1 1 1 1 1 1 1 1 2 2 3 3 1 2 2 3 3 4 3 2 2 3 2 2 1 1 1] 
-  [3 2 1 3 3 2 3 3 2 3 3 3 2 2 0 1 1 1 1 0 1 0 0 3 4 3 2 2 1 2 1 0 1 0 0 0 0 1 0 0 1 1 1 1 1 1 1 0 1 1 1 2 2 2 2 2 3 2 1 1 1 3 3 2 1 1 1 1 2 1 2 2 2 3 2 2 2 3 3 2 2 1 1 2 3 2 1 2 2] 
-  [2 2 2 2 3 3 3 2 2 3 3 2 3 1 1 0 1 1 0 0 1 0 2 4 4 3 2 2 1 1 1 1 0 0 0 0 0 1 0 0 0 0 1 1 1 0 1 0 1 1 1 1 1 2 1 2 3 2 0 1 0 1 3 2 2 1 1 1 2 2 2 1 1 1 1 3 3 2 1 0 1 0 1 1 3 3 1 1 1] 
-  [3 2 3 2 3 2 3 2 2 2 3 1 3 1 1 0 1 0 0 0 1 3 4 3 3 2 3 2 1 1 1 1 0 0 0 0 0 0 1 0 0 1 0 1 1 0 1 0 1 1 0 1 1 1 1 2 3 3 0 2 1 0 1 3 2 1 1 1 1 1 2 2 3 2 3 3 1 1 0 1 1 3 1 1 3 3 1 1 1] 
-  [3 2 3 3 2 3 3 2 3 1 3 2 3 1 1 0 0 0 0 1 3 3 3 3 3 3 2 2 1 1 1 1 1 0 0 0 0 0 1 0 0 1 1 1 1 0 1 0 1 1 1 1 1 1 1 2 3 3 1 1 1 1 0 1 1 1 1 2 1 2 1 1 2 3 3 3 1 1 2 3 3 3 3 2 2 3 1 1 1] 
-  [3 3 2 3 3 2 2 3 3 3 3 2 1 0 0 0 1 0 1 1 4 3 2 2 2 2 2 2 2 0 1 1 1 0 0 0 0 0 0 0 0 1 1 0 1 0 1 0 1 1 1 0 1 0 1 1 3 4 3 3 1 2 1 1 1 1 1 0 1 2 2 2 2 1 1 2 1 1 3 2 2 3 2 3 3 1 1 1 1] 
-  [3 3 3 2 3 2 3 3 2 3 2 2 1 1 1 0 1 1 2 3 4 3 2 2 3 3 1 1 1 1 1 0 1 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 0 1 1 0 1 0 1 1 1 3 4 3 3 3 3 2 1 2 3 1 1 0 0 0 0 1 1 2 2 3 3 2 2 3 2 3 3 3 1 2 1] 
-  [3 3 3 3 3 3 3 2 2 2 3 2 1 2 0 0 1 1 2 4 3 3 3 3 1 1 0 0 1 1 1 0 0 0 0 0 1 0 1 0 0 1 1 1 1 1 1 1 0 1 0 0 1 1 1 1 1 2 1 3 2 2 3 3 1 1 0 1 1 1 2 1 2 1 1 3 2 3 3 2 2 0 1 2 3 4 4 3 3] 
-  [3 2 3 3 3 2 3 2 2 3 3 1 1 1 0 1 1 1 4 4 3 2 2 2 1 1 1 0 1 2 1 0 1 1 1 1 0 0 1 0 1 1 1 1 0 1 1 0 1 1 1 1 1 1 1 2 1 1 2 2 2 2 1 3 2 2 2 1 1 1 1 2 3 1 2 2 3 3 3 3 2 1 3 3 3 2 3 3 4] 
-  [2 2 3 3 3 2 3 1 2 3 3 1 1 1 0 1 1 3 4 3 2 2 1 1 1 0 1 0 1 1 0 1 1 1 0 1 0 0 0 1 1 1 1 1 0 1 1 1 1 1 1 1 1 1 0 1 2 1 1 1 2 1 2 2 3 2 2 1 1 0 0 1 2 3 2 1 2 2 2 2 1 1 1 3 3 3 3 3 3] 
-  [3 3 3 3 3 3 2 2 3 2 2 1 2 1 1 0 3 4 2 2 2 1 1 1 0 0 1 1 2 1 1 0 0 0 0 0 0 0 0 1 1 1 1 0 1 1 1 0 1 1 1 1 0 1 0 1 2 3 3 2 1 1 1 1 2 2 2 1 0 1 0 1 2 2 3 2 2 1 1 2 1 1 2 2 3 3 4 3 3] 
-  [3 3 3 3 3 2 3 2 1 2 1 1 1 2 0 1 4 3 2 2 3 2 3 1 1 1 1 1 2 0 1 1 1 0 0 0 1 0 1 0 1 0 0 1 1 1 1 0 2 1 1 1 1 1 1 1 3 2 3 3 2 2 2 2 2 1 2 3 4 3 3 3 3 3 3 3 3 3 3 2 3 3 2 2 3 3 2 3 2] 
-  [3 3 3 2 3 3 3 1 1 1 1 1 1 1 0 1 4 3 2 2 3 3 3 1 0 1 0 1 1 1 1 0 1 1 0 0 0 1 1 0 1 0 0 1 1 1 0 1 1 1 1 1 1 1 1 1 3 3 2 2 3 2 3 2 2 2 3 4 4 4 3 3 4 3 3 3 3 3 2 3 3 3 1 1 1 1 1 2 2] 
-  [3 3 3 2 3 3 2 2 1 1 1 1 1 1 0 2 4 3 0 1 2 1 2 1 1 1 1 1 2 1 1 0 0 0 1 0 0 1 1 0 0 1 1 0 1 1 0 1 1 1 1 1 1 1 0 1 2 1 2 2 2 3 3 1 1 1 2 3 2 3 4 4 4 4 3 3 1 2 2 1 1 2 1 1 1 2 2 3 3] 
-  [3 3 3 3 3 3 3 2 2 1 1 1 2 1 3 4 3 2 2 1 1 2 2 1 1 1 1 2 2 1 0 1 0 0 0 0 0 1 1 0 0 0 1 1 1 1 1 1 1 0 0 1 1 1 1 2 3 2 1 1 2 2 3 2 1 2 3 2 3 3 3 3 3 3 3 3 2 3 3 2 2 2 2 1 1 3 3 3 2] 
-  [4 3 3 1 3 2 2 1 1 1 1 1 1 2 4 3 2 1 1 1 1 2 3 3 1 1 2 2 2 0 1 0 0 0 0 0 1 0 0 1 0 0 1 1 0 0 1 0 1 1 1 1 1 1 1 1 3 1 1 0 1 1 3 1 1 1 1 1 3 3 3 3 1 2 1 3 3 3 1 2 2 1 1 2 3 3 1 3 2] 
-  [4 3 2 1 2 2 2 1 2 1 2 1 2 4 3 1 1 1 1 0 1 1 2 3 3 3 2 1 2 0 0 0 0 0 0 1 0 0 1 0 1 0 0 1 1 1 0 1 1 1 1 1 1 1 0 1 2 1 1 1 0 2 1 0 1 1 1 1 1 1 2 2 3 3 3 3 3 3 1 2 3 1 3 3 1 1 1 1 1] 
-  [3 3 2 1 2 2 2 2 1 1 1 0 3 4 1 1 0 1 1 1 0 0 1 1 2 2 1 1 1 0 0 0 1 0 0 1 1 1 1 0 1 0 0 0 1 1 0 1 0 1 0 1 1 1 1 0 1 3 1 0 2 3 1 0 0 0 1 1 0 1 2 2 3 1 3 2 2 3 3 2 2 1 2 3 3 2 2 2 1] 
-  [3 3 3 1 2 2 2 2 1 2 1 0 3 4 1 1 0 0 1 1 1 1 1 1 1 1 1 1 0 1 1 0 0 1 0 1 1 1 1 0 0 1 0 1 0 0 1 0 1 2 1 1 1 1 1 1 1 2 2 2 1 0 1 1 2 1 1 1 1 1 3 1 0 0 2 2 2 2 2 3 2 1 2 2 2 3 2 2 0] 
-  [3 2 3 3 2 2 3 2 2 1 0 1 3 3 1 1 2 1 0 1 2 2 1 1 0 1 0 1 1 0 1 0 0 0 1 1 1 0 1 0 0 0 1 0 1 1 0 1 0 2 1 1 1 1 1 1 2 2 2 3 1 1 1 0 2 3 3 1 2 1 3 2 1 2 2 2 2 2 1 1 1 1 2 0 2 2 1 2 1] 
-  [3 3 3 3 2 2 3 1 2 1 0 1 3 3 3 3 3 3 3 3 1 0 1 1 1 0 0 0 0 1 0 0 1 1 0 1 0 0 0 1 0 0 0 0 1 1 0 0 1 1 1 1 1 1 1 1 1 2 1 1 1 1 1 0 2 3 3 2 2 3 3 2 3 2 1 2 1 1 1 1 2 2 2 2 1 2 1 1 2] 
-  [3 2 3 3 2 3 2 1 2 1 0 1 1 2 3 3 2 3 2 2 2 1 2 2 1 1 1 1 1 1 1 1 1 0 1 0 1 1 0 0 1 1 1 1 0 1 1 1 1 1 1 1 0 0 1 0 1 2 2 1 1 1 1 1 1 3 1 2 1 3 2 2 2 2 2 2 1 2 1 2 1 1 1 2 1 2 2 2 2] 
-  [3 2 3 3 2 3 2 2 3 0 0 0 1 1 3 1 2 2 3 3 3 3 2 1 1 3 3 2 1 1 1 1 1 1 0 1 1 1 1 1 1 1 0 1 1 0 1 0 0 1 0 1 0 1 0 0 0 1 1 1 1 1 1 1 1 2 1 1 1 0 2 2 1 2 2 1 1 1 2 1 1 2 1 2 2 3 3 3 1] 
-  [3 3 3 3 3 2 2 3 2 0 0 1 2 2 0 1 1 1 1 2 3 3 3 3 2 1 1 1 2 2 1 1 1 1 1 1 1 1 1 1 0 1 1 1 1 1 0 1 0 0 1 1 1 0 1 0 0 1 1 0 1 1 1 1 1 1 1 1 2 1 2 1 2 3 1 1 2 3 2 2 3 3 3 3 3 3 3 3 3] 
-  [3 3 4 3 3 3 3 2 1 0 1 1 4 3 1 0 1 0 0 1 1 1 3 3 3 3 2 3 3 2 2 1 3 2 1 1 1 1 1 1 1 0 0 1 1 1 1 1 1 1 0 1 0 0 1 1 0 1 1 1 1 1 1 1 1 1 2 2 2 2 1 2 1 3 1 1 2 3 2 1 1 1 2 2 2 2 3 3 1] 
-  [4 3 4 3 3 2 2 1 1 1 1 1 3 3 2 1 1 1 3 3 1 2 3 3 3 4 4 4 4 3 4 4 3 3 2 2 2 2 1 2 0 0 0 1 1 1 1 0 0 0 1 1 1 0 1 1 1 2 1 1 1 2 1 1 1 1 1 1 2 1 2 1 1 1 1 3 1 2 1 1 0 0 2 2 1 1 1 1 3] 
-  [3 3 3 3 4 4 3 2 2 1 1 1 0 1 0 0 1 2 1 1 1 2 1 1 2 3 2 3 3 3 2 2 3 3 3 2 3 1 2 3 1 0 1 1 3 1 0 1 0 1 1 1 1 1 1 1 1 2 1 1 1 2 2 1 2 1 2 2 1 1 1 1 2 1 2 2 2 1 1 2 2 1 1 1 2 2 2 1 1] 
-  [3 3 3 3 3 4 4 3 3 3 2 1 0 0 0 1 1 1 0 1 0 1 1 1 1 2 1 1 2 3 2 1 3 3 3 2 3 1 2 1 3 1 1 2 3 2 1 1 1 0 0 0 1 1 1 2 2 2 1 1 2 3 3 3 2 3 3 1 1 1 1 2 3 1 1 1 2 2 1 2 2 1 1 3 1 1 2 1 2] 
-  [3 3 3 3 3 3 3 3 3 3 2 2 1 0 0 1 0 0 0 0 1 1 1 0 0 1 1 1 1 1 1 1 3 2 3 3 3 3 3 1 1 2 1 1 1 1 1 0 0 0 0 1 1 1 1 2 1 1 1 1 3 3 2 1 3 3 2 1 1 1 1 2 2 1 1 1 1 3 3 3 2 2 1 1 1 2 1 3 2] 
-  [3 3 3 3 2 3 3 4 3 2 3 3 3 1 0 1 0 0 0 0 0 0 0 0 0 1 0 0 1 0 0 1 2 3 3 4 4 3 3 3 2 1 1 1 2 1 0 1 0 0 0 1 1 1 2 2 1 1 1 2 3 1 1 1 3 3 1 2 2 1 1 1 2 1 1 3 3 1 1 3 1 3 1 1 2 1 1 1 2] 
-  [3 3 3 3 3 3 3 3 3 3 3 2 3 2 2 1 1 1 1 0 0 0 1 1 1 1 1 1 1 1 0 1 1 2 3 3 3 3 3 3 3 2 1 2 2 1 0 1 1 0 1 1 1 1 1 1 1 1 1 2 3 2 2 1 3 3 2 1 1 1 1 1 1 2 2 2 1 2 2 3 1 1 1 3 3 3 1 1 1] 
-  [3 3 3 3 3 3 3 2 2 1 1 3 3 2 1 2 1 1 1 1 0 0 2 1 1 0 0 0 1 2 1 0 0 0 1 3 2 2 3 3 1 1 1 1 3 0 1 2 2 2 1 2 1 1 2 1 2 2 1 1 3 3 2 1 3 3 1 1 1 1 1 1 2 2 3 1 2 3 1 1 1 1 1 3 2 1 1 1 1] 
-  [3 3 3 3 3 3 3 2 2 1 3 3 2 2 1 2 2 2 2 3 3 2 1 1 2 3 1 1 3 2 1 1 0 0 1 1 2 3 3 3 3 3 3 2 1 2 2 1 0 1 1 1 1 1 2 1 1 2 3 1 2 3 1 1 1 3 3 3 1 1 2 1 2 3 2 2 3 3 1 1 2 1 1 1 1 1 1 1 1] 
-  [4 3 3 3 3 3 3 3 3 2 3 2 2 2 3 1 2 2 3 3 3 4 3 3 3 3 2 2 2 3 1 1 1 1 1 1 1 3 3 3 3 3 3 3 3 1 1 0 0 0 1 2 2 1 2 2 2 2 3 2 2 3 3 1 2 2 1 1 2 2 3 3 2 3 2 2 3 3 3 2 2 2 3 1 1 1 2 2 2] 
+  [2 2 3 2 2 2 2 2 3 1 2 3 3 3 3 3 3 3 3 3 2 2 2 1 2 1 2 2 1 1 2 2 2 2 2 2 2 2 2 2 3 3 2 2 3 2 2 2 2 2 1 2 1 1 1 2 1 1 2 3 1 1 1 1 0 0 0 1 1 1 0 0 0 0 0 1 2 3 3 2 1 2 3 3 2 2 2 3 2 2 2 2 1 1 1 2 2 3 3 2 1 2 2 2 2 1 2 2 2 2 2 2 2 3 3 3 2 2 2 3 3 3 2 3 3 3 3 3]
+  [2 2 2 2 2 2 3 3 3 3 2 3 3 2 2 3 4 4 3 3 2 1 1 2 1 1 2 2 2 2 2 1 2 2 2 2 2 3 2 2 2 2 2 2 2 3 3 2 2 1 2 2 1 2 2 2 1 2 2 2 1 3 3 2 1 0 0 1 1 1 1 0 0 0 1 1 3 3 2 1 2 3 3 2 2 2 3 2 2 2 2 2 2 1 2 3 2 2 3 3 3 2 2 3 2 2 2 1 2 3 3 3 3 3 3 3 3 2 2 2 3 3 3 3 3 3 2 1]
+  [3 1 2 2 2 3 2 3 3 3 2 2 2 3 1 3 4 4 3 3 2 2 1 2 2 2 3 2 3 2 2 2 1 1 1 2 2 2 2 1 3 2 3 2 2 2 3 2 2 2 2 1 2 2 1 2 1 2 2 3 1 1 3 3 1 0 0 1 1 1 1 2 0 0 1 1 3 2 1 1 2 3 2 1 2 3 2 1 2 3 2 2 2 2 2 2 3 3 2 1 3 3 3 3 3 3 2 3 3 3 2 2 3 3 2 3 2 2 2 3 2 3 3 3 2 2 3 3]
+  [3 3 2 3 2 2 2 3 2 2 3 3 2 3 3 2 1 4 3 3 2 3 3 2 2 2 1 3 3 2 2 3 2 2 1 2 2 2 3 2 2 2 2 2 3 2 2 2 3 2 2 3 2 2 2 2 2 1 2 2 2 1 2 3 2 1 0 0 1 1 1 1 2 1 1 2 1 3 2 2 3 1 2 3 3 3 1 2 2 3 2 2 1 2 2 2 2 2 3 3 3 1 3 3 3 3 3 3 3 2 3 3 3 3 2 2 3 2 3 3 3 3 3 3 3 3 3 3]
+  [3 3 2 2 2 2 2 2 2 1 2 3 2 3 3 1 1 3 4 3 3 3 2 2 1 3 2 2 3 2 2 2 2 2 2 2 2 2 2 2 2 2 3 3 2 2 3 2 2 2 2 2 2 1 1 2 2 1 2 2 2 1 3 3 3 1 0 0 1 1 0 0 2 0 1 0 2 2 2 3 2 3 3 3 2 1 1 2 2 3 2 1 1 1 1 2 0 2 1 0 1 2 2 2 3 3 2 3 3 3 2 3 2 2 1 3 3 2 2 2 3 3 3 3 3 2 2 3]
+  [3 1 1 1 1 2 2 2 2 3 3 3 3 3 2 2 3 3 4 3 3 3 3 2 1 2 2 2 3 3 3 2 2 1 2 2 2 2 2 2 2 2 2 3 2 3 3 2 2 1 2 2 2 2 2 2 1 2 3 2 2 2 2 3 3 3 2 1 1 0 0 0 1 1 1 1 2 2 2 2 3 2 2 2 1 1 2 3 3 2 2 2 1 1 1 1 2 2 1 1 1 1 0 1 1 1 2 2 2 2 2 3 3 2 2 3 3 3 3 2 2 2 3 3 3 2 3 3]
+  [1 1 0 0 1 1 2 1 2 2 3 2 3 3 2 2 3 3 4 4 3 3 3 2 2 2 2 2 3 3 3 2 2 2 2 2 3 2 2 2 3 3 3 2 2 2 2 2 3 2 3 1 2 2 2 1 2 1 2 2 2 2 3 1 1 2 3 1 1 1 1 0 2 1 1 1 2 3 2 3 2 1 2 1 1 2 3 2 2 2 2 2 1 2 1 2 3 2 1 1 2 1 1 2 1 1 2 3 3 3 3 3 3 2 2 3 3 3 3 3 3 3 3 3 3 3 2 3]
+  [2 1 1 1 1 1 1 1 3 2 3 3 3 2 2 2 2 2 4 4 3 3 3 3 2 2 1 2 3 3 3 3 2 2 3 2 2 2 3 3 2 3 3 2 2 2 2 3 3 2 2 2 2 2 2 2 2 2 2 2 1 1 2 1 2 2 3 1 1 1 1 1 1 1 1 1 2 3 1 2 2 1 1 2 2 2 2 2 1 3 3 2 1 2 3 2 3 2 3 3 2 2 2 1 2 1 1 1 1 2 2 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3]
+  [2 2 2 2 2 1 2 1 0 1 2 2 3 2 1 0 1 1 4 4 3 3 2 2 2 2 1 2 2 3 3 3 3 3 3 2 2 2 3 3 3 3 3 3 2 3 2 3 2 2 3 2 2 2 2 1 2 2 1 1 1 1 1 2 2 1 2 2 1 0 1 1 0 0 2 2 1 3 1 1 1 2 2 2 1 2 2 1 2 2 3 2 2 2 2 2 3 2 3 2 2 2 2 1 1 1 2 1 2 1 2 2 2 1 2 3 3 3 3 3 3 3 3 3 3 3 3 3]
+  [2 2 3 2 2 2 2 2 1 1 1 2 3 2 0 1 0 1 4 4 3 3 3 3 2 2 2 2 2 2 2 3 2 3 3 3 2 3 3 3 3 3 2 3 2 3 3 2 3 2 3 2 2 2 3 1 2 1 2 1 2 1 1 2 2 1 2 3 1 0 0 0 1 0 2 2 2 2 1 1 1 1 1 2 2 1 2 2 3 2 2 2 2 3 2 3 2 3 3 2 2 2 1 1 1 2 2 3 2 2 1 2 1 3 3 3 3 2 3 3 2 2 2 2 2 3 1 2]
+  [1 1 2 3 3 3 3 2 2 3 3 4 3 3 2 2 2 1 3 4 4 4 3 3 3 3 2 2 2 2 2 3 2 2 3 3 2 2 3 3 2 3 3 3 2 3 2 3 2 2 3 2 2 2 2 2 2 2 3 1 2 1 1 2 2 2 2 3 2 1 0 0 0 1 1 1 2 1 1 1 1 2 2 1 1 1 2 2 2 2 3 2 3 2 2 2 2 2 2 2 2 3 2 2 2 2 1 2 2 2 2 1 2 2 2 3 3 2 3 3 2 2 2 2 2 2 3 3]
+  [3 3 2 3 3 3 3 3 4 4 4 3 3 3 2 2 3 3 3 3 4 3 3 2 2 2 2 2 2 1 2 2 3 3 3 3 3 3 3 3 2 2 2 2 3 3 2 2 2 1 3 2 1 2 2 2 1 2 2 1 1 2 1 1 2 2 1 3 1 1 0 0 0 0 2 1 1 2 0 1 1 2 1 2 1 2 1 1 2 1 2 2 2 2 2 2 2 1 3 3 2 3 1 2 2 2 1 2 3 3 3 1 2 3 1 3 3 2 1 2 2 2 3 1 1 2 3 2]
+  [1 2 3 3 3 3 3 4 4 4 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 1 2 1 1 2 2 2 3 3 3 3 3 3 3 3 1 2 2 2 2 2 3 1 2 2 2 2 1 2 2 2 2 2 2 1 2 2 2 2 2 3 2 1 2 1 1 0 0 0 2 1 2 1 1 2 3 1 0 2 2 1 2 1 1 1 2 1 1 2 2 2 3 2 2 2 2 2 1 2 2 2 1 3 3 3 3 1 2 3 3 3 3 2 1 2 2 2 2 1 3 3 2 3]
+  [3 3 3 3 3 3 4 4 4 4 3 3 3 3 3 3 3 2 3 3 3 1 2 3 2 2 2 2 1 2 1 3 3 3 3 3 3 3 3 3 2 3 2 2 3 2 2 1 2 2 2 3 2 2 2 1 2 3 2 2 3 2 2 2 2 3 3 2 2 1 0 0 0 0 1 1 2 1 1 3 2 1 1 1 2 3 2 2 1 2 2 1 2 2 1 2 2 1 2 2 2 2 1 1 3 2 2 3 3 2 2 2 2 3 3 3 3 2 2 2 2 1 2 3 3 3 2 1]
+  [3 3 3 3 3 4 4 4 4 4 3 3 3 3 2 2 3 3 2 3 3 3 3 2 2 2 2 1 1 2 1 3 3 3 3 3 2 3 3 2 2 3 2 2 3 2 3 2 2 2 2 2 2 1 2 2 2 2 2 2 2 1 3 2 2 2 2 1 2 1 1 0 0 1 1 3 3 1 1 3 1 1 1 1 1 2 2 2 1 1 2 2 1 2 2 2 3 0 1 2 2 1 2 2 2 2 3 3 3 1 3 3 2 3 3 3 2 3 1 2 2 3 3 2 2 1 2 1]
+  [3 3 3 3 4 4 3 3 4 4 3 3 3 3 3 3 3 3 3 3 3 3 4 3 2 1 2 1 1 2 2 3 3 3 3 3 3 3 3 2 3 2 2 3 3 3 3 2 2 3 3 2 2 2 2 3 2 3 2 2 2 2 2 2 2 2 2 1 2 2 0 0 0 1 1 2 2 1 2 1 1 0 1 1 1 1 1 1 2 1 2 2 2 2 1 2 3 1 1 1 1 2 1 2 2 3 3 3 3 3 3 3 2 3 3 3 3 3 2 2 3 3 1 1 2 3 3 3]
+  [3 3 3 4 4 3 3 3 4 4 3 2 2 4 3 3 3 3 4 4 4 4 4 4 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 1 2 3 2 3 3 2 3 2 2 1 2 3 2 2 3 2 3 2 2 2 2 2 2 1 3 2 1 2 2 0 0 0 1 2 2 1 1 1 1 1 1 0 1 0 1 1 1 0 1 1 1 1 1 1 1 2 1 1 1 2 1 2 2 3 3 3 3 3 3 2 3 3 3 3 2 2 3 3 3 3 2 1 1 1 3 2 1]
+  [3 3 4 3 3 3 3 3 4 4 3 4 4 3 3 3 3 3 3 3 4 3 3 3 3 3 3 4 4 4 4 4 3 3 3 3 3 2 3 2 2 2 3 3 2 3 1 2 1 2 2 3 2 2 2 2 2 2 3 3 2 3 3 2 2 2 2 1 1 0 0 0 0 1 3 1 1 1 2 2 1 0 1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2 1 2 2 3 2 3 2 3 3 3 3 3 3 2 2 2 3 3 3 3 1 2 1 2 1 3 1]
+  [4 4 3 3 3 3 3 3 3 4 4 4 3 3 2 3 3 3 3 3 3 3 2 3 3 3 3 3 4 4 4 4 3 3 3 3 3 3 3 3 3 4 3 3 3 3 1 1 1 1 2 2 2 2 2 1 2 3 2 3 2 3 3 2 2 2 3 1 0 1 0 0 0 1 3 2 2 3 0 2 1 0 1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2 1 1 2 2 3 2 2 2 3 3 3 3 3 2 3 3 3 2 2 3 2 2 2 3 2 1 2]
+  [3 3 3 4 3 3 3 3 2 3 4 3 1 2 3 3 3 3 3 3 3 3 3 3 3 3 3 4 4 4 3 3 4 4 4 4 4 3 3 3 3 3 3 3 3 3 1 3 2 1 2 2 1 1 2 2 2 3 2 3 3 2 3 3 1 3 3 1 1 1 0 0 0 1 2 2 2 2 1 2 1 1 1 1 0 1 1 1 1 1 1 1 1 1 2 2 2 1 2 1 3 1 2 2 2 3 2 2 2 3 3 3 3 3 3 3 3 3 3 3 3 2 3 1 2 3 2 1]
+  [3 3 3 3 3 3 3 3 2 3 4 3 2 3 3 4 3 3 3 3 3 3 3 3 3 4 4 4 4 4 4 4 4 4 4 4 4 4 4 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 2 2 2 3 3 2 1 0 0 0 0 0 1 2 2 3 2 0 2 0 1 0 1 0 1 1 0 1 1 1 1 1 1 2 2 1 2 1 2 2 2 2 1 2 3 3 2 3 3 3 2 3 3 3 2 3 3 3 2 2 1 2 1 3 2 2 3]
+  [3 3 2 2 3 3 2 2 2 1 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 3 3 3 3 3 4 4 4 4 3 1 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 2 3 3 2 1 1 0 0 0 0 1 1 2 2 3 2 1 1 0 0 1 1 0 1 1 1 1 1 1 1 1 2 2 1 2 1 2 2 1 3 1 1 2 2 2 3 3 2 2 2 3 3 3 2 3 3 3 1 2 2 2 2 2 2 2 2]
+  [3 3 3 3 3 2 2 3 1 1 1 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 4 3 3 2 3 3 3 3 3 3 3 3 3 3 2 2 3 2 3 3 3 3 3 3 3 3 3 3 2 2 1 1 0 1 1 0 0 2 2 3 3 2 1 0 0 0 1 1 1 0 1 0 1 1 1 1 2 1 2 1 1 1 1 1 2 2 2 1 2 2 2 2 2 3 3 3 3 1 2 2 2 3 3 2 1 1 1 2 1 3 2 3]
+  [2 2 3 3 3 2 2 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 3 3 3 3 3 3 3 3 3 3 3 3 4 3 3 2 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 2 2 2 1 0 1 0 1 0 1 2 2 3 3 1 1 1 0 0 1 1 1 0 1 0 1 1 1 1 1 1 1 0 2 2 2 2 2 3 3 2 2 2 3 3 3 3 3 1 3 3 2 2 2 3 3 3 2 3 1 2 2 2 1 3]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 4 4 4 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 2 3 2 3 1 0 0 0 0 1 0 1 1 3 3 1 1 1 1 0 1 0 1 1 0 1 1 1 0 1 1 1 1 1 1 1 1 2 2 2 1 2 2 3 3 3 2 3 3 3 2 2 3 3 3 3 2 3 3 3 3 2 2 2 2 2 2]
+  [3 3 3 3 3 3 3 4 4 3 3 3 3 3 3 3 3 3 3 4 3 4 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 4 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 2 2 3 3 2 3 1 0 1 1 1 1 1 2 3 3 2 1 0 1 1 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 1 1 1 2 3 2 2 3 3 3 3 3 3 3 3 2 3 3 2 3 3 3 3 3 3 3 3 3 3 2 1 2 2]
+  [3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 4 4 4 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 2 2 2 2 2 1 0 0 0 0 1 1 2 3 3 1 1 1 1 1 1 1 1 0 1 1 1 0 1 0 1 1 0 1 1 1 1 1 1 2 2 2 3 2 2 2 3 3 2 1 2 2 3 2 1 3 2 2 2 3 3 3 3 2 2 3 2 1]
+  [1 2 2 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 1 3 3 1 1 0 0 0 0 0 1 3 3 2 1 0 1 0 1 1 1 1 1 1 1 1 0 1 1 1 1 0 1 1 1 1 1 1 1 1 3 2 2 3 3 2 2 3 3 3 2 3 3 3 3 3 3 2 3 3 1 2 2 2 2 3 2]
+  [3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 1 2 3 2 1 1 1 1 1 0 1 3 3 2 1 1 1 1 0 1 1 1 1 1 1 1 1 0 1 1 1 1 1 1 0 1 1 1 1 1 3 2 2 3 3 2 2 2 2 3 3 3 2 1 3 3 2 2 2 3 2 3 2 3 3 2 2 3]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 1 1 1 1 1 1 1 2 2 2 1 1 0 1 0 1 1 1 1 0 1 0 0 1 0 1 1 1 1 1 1 0 1 1 0 1 1 2 2 2 1 1 2 2 2 2 2 3 2 3 3 2 3 3 2 3 2 3 2 3 3 2 3 2 2]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 4 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 1 0 0 0 1 2 1 2 2 1 1 2 1 0 0 0 1 1 0 0 1 1 0 0 1 1 1 1 1 0 1 0 0 1 1 1 1 1 2 2 1 1 2 2 1 2 3 2 2 2 3 2 2 3 1 2 3 2 2 2 3 3 2 2 2]
+  [3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 4 4 3 3 3 3 3 3 3 3 2 3 3 3 3 4 4 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 1 1 1 0 0 0 0 0 0 0 2 1 3 3 2 2 1 0 1 0 1 0 1 1 1 1 1 0 1 1 1 1 1 1 1 0 1 0 1 1 1 3 2 1 2 1 1 1 1 2 2 3 1 3 2 2 2 3 2 1 2 3 2 2 3 3 2 2 1 2]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 4 4 3 3 3 4 3 3 3 3 4 3 3 2 3 2 1 1 2 1 1 1 1 1 1 1 0 2 3 3 3 2 1 1 0 0 1 0 0 1 1 1 1 1 1 0 1 0 1 1 1 1 0 0 1 1 1 2 2 2 1 1 1 1 1 1 1 2 2 2 3 1 2 2 3 2 2 3 1 2 2 2 2 2 1 2 1]
+  [3 3 3 3 3 3 3 3 2 3 3 3 3 3 2 3 3 3 2 2 3 3 3 3 3 3 3 3 3 4 3 3 3 3 2 2 3 3 3 3 4 4 3 3 3 4 3 3 3 2 2 1 2 1 2 2 1 1 1 1 2 1 0 0 0 0 0 1 3 3 3 1 2 2 1 1 1 2 1 2 1 0 1 1 1 1 0 1 0 1 1 0 1 1 1 1 1 2 1 0 1 1 2 1 1 2 1 1 2 3 3 1 1 2 3 2 2 3 3 1 2 3 2 2 3 2 2 2]
+  [2 2 2 3 3 3 3 3 3 3 3 3 3 2 2 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 4 3 3 3 3 3 3 3 3 3 3 3 2 1 2 1 1 1 2 0 1 1 2 1 0 0 0 0 1 1 2 3 2 2 2 2 1 1 2 3 3 1 0 0 1 0 1 1 0 1 0 1 1 0 1 1 0 2 1 1 1 1 1 2 1 2 2 1 2 2 2 2 1 2 2 2 2 3 3 3 2 0 3 2 2 2 2 3 3 2]
+  [2 2 3 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 4 4 3 3 3 3 3 3 3 3 2 1 2 2 2 2 2 1 1 1 1 1 0 0 0 0 0 0 0 0 1 1 2 3 3 1 0 0 0 1 1 1 1 1 0 0 0 0 0 1 0 0 1 0 1 1 1 1 1 1 1 0 1 1 1 2 1 2 2 1 1 3 2 1 3 3 3 3 2 3 3 2 2 1 1 2 1 2 2 2 3 3 3]
+  [3 1 2 3 3 3 3 3 3 3 3 3 3 3 2 2 2 3 2 3 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 4 4 3 3 3 3 2 1 1 1 0 1 1 1 2 1 2 2 1 2 3 2 1 1 1 0 1 1 1 1 1 1 2 3 3 1 0 1 1 1 1 0 1 0 0 0 0 1 1 0 1 1 0 0 0 1 1 1 1 0 0 2 1 1 1 2 1 1 3 1 1 1 1 2 3 2 1 2 2 3 3 3 3 2 1 2 1 2 1 2 2 3 2]
+  [3 2 1 2 3 3 3 3 3 3 4 3 3 3 2 2 3 2 2 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 4 4 4 3 3 3 2 1 0 2 1 1 1 2 1 1 0 0 0 0 2 1 2 2 1 1 1 1 1 1 1 2 2 3 1 1 1 0 1 0 0 1 0 0 0 1 1 0 0 1 0 1 1 1 0 1 1 1 1 1 1 1 1 0 1 1 3 1 2 3 1 1 1 1 2 3 3 1 1 2 3 2 2 2 1 2 2 1 1 1 2 2 2 3]
+  [2 3 2 2 2 3 3 3 3 3 3 3 3 3 3 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 4 3 3 3 2 2 1 1 1 1 1 1 1 2 2 1 2 1 0 0 0 1 2 1 1 1 1 2 2 0 2 2 1 2 1 1 1 0 1 1 1 1 0 1 1 0 1 0 1 0 0 0 1 1 0 1 1 1 1 1 0 1 1 0 1 2 3 1 3 2 1 1 2 1 2 3 2 3 1 2 3 3 2 1 2 1 2 3 3 2 2 3 3 3]
+  [3 3 1 1 1 1 2 2 2 2 3 3 3 3 2 3 2 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 1 2 3 0 0 0 0 0 0 1 1 1 1 1 1 1 0 0 0 0 1 1 0 0 0 0 1 0 1 1 2 1 1 1 1 0 0 1 1 1 1 1 1 0 0 1 0 1 0 0 1 1 1 1 1 1 0 1 1 1 1 1 2 2 1 0 1 1 2 1 1 1 2 3 2 1 1 2 1 3 3 1 1 3 2 1 3 3 3 3 3 3]
+  [3 1 1 1 3 1 1 2 2 3 2 2 3 3 3 3 3 2 2 3 3 2 3 3 3 3 3 3 2 2 2 2 3 3 2 2 2 3 2 0 0 0 0 0 1 1 1 1 1 1 0 1 0 0 0 1 1 1 0 1 0 1 1 1 1 2 1 1 1 1 0 1 1 1 0 0 1 1 1 1 0 1 0 1 0 1 1 1 0 0 1 1 1 1 0 1 1 1 1 1 2 1 1 2 2 2 1 1 2 2 1 1 2 2 0 1 3 2 3 2 2 2 2 2 3 3 3 3]
+  [3 2 2 2 1 2 1 2 1 2 3 1 2 3 3 3 2 2 2 3 3 3 3 4 3 3 3 3 2 2 2 2 2 3 3 3 3 3 1 1 0 0 1 1 0 1 1 1 1 2 1 1 0 1 1 0 1 1 1 1 0 1 1 1 2 2 2 1 0 1 1 0 0 0 0 1 1 0 1 1 0 1 1 0 1 0 1 1 0 1 0 1 1 1 0 1 2 1 1 2 2 2 1 3 1 2 2 2 2 2 1 1 2 2 2 2 1 3 3 3 3 3 3 3 3 3 3 2]
+  [2 2 3 3 3 1 2 1 2 2 0 1 2 1 3 3 3 2 1 2 3 3 3 3 3 3 3 3 3 2 2 1 3 3 3 2 1 0 0 0 0 1 1 0 0 1 1 1 2 2 3 3 1 1 1 1 1 1 1 1 1 1 1 1 3 1 2 1 1 1 0 0 1 1 0 1 0 1 1 1 1 0 0 1 1 1 1 1 1 0 0 1 1 1 0 1 1 1 1 2 1 2 2 2 1 1 1 3 1 2 1 1 1 3 1 2 2 3 3 2 2 3 3 3 3 3 2 1]
+  [1 2 2 3 3 2 2 2 3 2 1 0 1 2 1 2 3 3 3 3 3 3 3 3 3 3 3 3 2 2 2 3 3 3 2 0 0 0 1 1 0 0 1 0 1 1 2 2 3 3 2 2 1 2 2 1 2 3 2 1 1 0 1 1 3 2 2 1 0 0 1 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 1 0 1 0 2 1 1 2 1 1 1 1 3 1 1 1 3 1 3 1 1 1 1 1 3 2 2 2 1 2 3 3 2 1 1 1 2]
+  [3 1 1 2 1 2 2 3 2 3 3 2 2 3 2 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 0 0 0 1 2 1 1 1 1 0 0 1 3 2 1 1 1 2 2 2 1 1 1 1 1 2 1 2 0 1 2 3 2 1 1 1 1 0 0 1 0 1 1 1 1 1 1 1 1 1 1 1 2 1 2 1 1 0 1 1 1 2 1 1 3 1 2 3 3 3 3 1 3 3 1 2 1 1 2 1 2 3 2 2 2 3 3 2 3 1 2 2 1 3]
+  [3 3 2 2 2 1 3 3 2 2 3 2 2 3 1 2 2 2 2 2 2 2 2 2 2 1 2 2 3 3 3 3 3 1 0 0 1 1 3 2 1 1 1 1 1 1 1 1 1 1 1 1 2 1 1 1 1 1 1 1 1 0 2 0 1 3 3 2 0 1 1 0 1 0 1 1 0 1 1 1 2 1 1 1 1 1 1 2 1 1 1 1 0 1 1 3 2 1 2 1 1 3 3 2 3 1 3 2 1 2 2 1 1 2 2 3 2 1 1 2 3 3 2 2 3 2 3 3]
+  [3 3 3 3 3 1 3 3 2 1 1 1 1 3 3 2 2 3 3 3 2 2 1 3 3 2 3 1 1 2 2 2 1 1 0 1 3 2 3 2 0 0 0 2 1 1 2 1 1 1 0 0 1 1 1 1 1 1 1 1 1 0 1 1 1 1 3 3 0 1 1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1 3 3 1 1 1 0 0 1 2 3 2 2 2 2 1 0 1 3 3 2 2 2 1 3 1 3 3 3 2 2 1 2 1 1 2 2 3 2 3 3 3 1]
+  [2 1 3 3 3 3 3 3 2 1 2 3 3 3 2 3 3 3 2 3 3 3 2 2 2 3 3 2 1 1 2 2 1 1 0 0 1 1 2 1 0 0 1 2 1 0 0 1 0 0 0 1 0 1 1 1 1 1 1 1 1 1 1 1 2 1 1 2 2 1 1 1 1 1 1 1 1 1 1 1 1 1 0 1 1 1 2 2 3 1 2 1 1 3 3 3 1 1 3 2 2 1 2 3 3 2 3 1 0 3 3 3 1 1 1 2 2 2 3 3 3 3 3 3 2 2 1 1]
+  [2 3 2 3 3 4 3 2 3 2 2 1 3 2 1 2 0 2 1 1 2 3 3 2 2 2 2 3 2 1 2 1 1 0 0 0 1 0 1 0 0 0 1 2 0 0 0 0 1 0 0 0 1 1 1 0 0 1 1 1 1 1 1 1 2 1 1 2 3 3 3 0 1 1 1 1 1 1 1 1 1 1 1 1 1 0 1 3 2 2 3 2 2 3 2 3 2 0 1 1 3 1 3 1 1 2 3 1 1 3 3 2 2 1 2 2 2 1 2 3 3 4 3 3 3 1 2 2]
+  [2 2 3 3 3 3 3 3 2 3 3 3 3 2 2 2 1 1 2 2 2 2 1 1 3 1 3 2 2 2 1 0 0 1 0 1 1 0 1 0 1 1 3 2 0 0 1 1 0 0 0 0 0 0 1 0 1 1 1 2 1 1 1 1 1 1 1 1 2 2 3 2 1 1 1 1 1 1 1 1 1 1 1 2 1 1 2 2 1 1 2 3 3 1 2 2 2 3 2 3 3 3 3 2 3 3 3 3 3 3 2 1 3 3 2 2 3 3 3 3 4 3 3 2 3 3 3 1]
+  [1 3 3 2 3 3 3 3 3 3 3 2 3 3 2 1 1 1 1 3 2 2 1 3 2 1 3 3 1 2 1 0 0 0 1 1 0 0 1 1 1 3 3 2 0 1 1 0 1 0 0 0 0 0 1 0 0 1 1 1 1 1 1 1 1 0 1 1 2 1 3 3 2 1 1 2 1 1 2 1 1 1 0 1 1 2 2 3 2 0 0 1 1 1 0 1 2 2 2 3 3 2 2 3 3 2 2 1 2 3 1 1 3 2 1 2 3 4 3 1 1 3 3 3 2 2 1 2]
+  [2 2 2 2 3 3 3 3 3 2 3 3 3 3 2 3 1 1 1 2 2 2 2 2 2 2 3 2 2 1 1 0 0 1 1 0 0 0 1 2 2 2 2 2 0 1 1 0 0 0 1 1 0 1 1 1 1 1 1 0 1 1 1 1 1 1 0 1 0 1 3 2 3 3 2 2 1 1 2 1 1 1 1 2 3 3 3 2 3 1 3 1 1 1 0 0 1 1 2 3 3 2 2 3 3 2 3 3 3 3 3 3 4 4 4 3 4 4 3 2 3 3 3 3 3 2 2 1]
+  [1 2 1 1 2 3 3 3 3 3 3 3 3 3 3 3 1 1 1 2 2 2 1 2 2 1 2 3 2 0 1 0 1 1 1 1 0 0 1 2 3 1 2 1 1 1 0 0 0 1 1 2 1 1 1 2 1 2 1 1 1 1 1 1 1 1 1 1 0 1 1 1 3 2 1 2 2 1 1 1 0 1 1 2 2 3 3 0 2 3 2 1 1 0 1 0 1 1 1 1 1 2 2 2 2 1 2 3 4 3 3 2 3 3 3 4 3 2 2 2 1 2 3 1 2 3 3 2]
+  [1 2 2 2 2 3 3 3 3 3 3 3 1 3 3 2 1 2 2 2 2 1 1 2 2 1 2 3 1 0 1 0 1 1 0 1 0 0 1 2 3 2 1 1 1 1 0 1 1 1 1 2 2 2 2 2 3 1 1 1 1 1 1 1 1 0 1 1 1 1 2 1 3 3 2 1 2 1 0 1 1 0 1 1 2 2 3 1 3 3 3 2 1 0 0 1 1 1 1 1 1 1 2 2 1 2 2 1 2 3 3 2 2 2 3 3 3 2 1 1 1 2 2 2 2 3 3 3]
+  [1 1 2 2 2 3 3 3 3 3 3 3 2 3 2 2 1 2 3 2 3 2 1 2 1 1 3 3 1 0 0 1 1 0 0 0 0 2 2 3 2 1 1 1 0 0 1 1 2 2 2 2 1 1 1 0 1 3 2 1 1 1 1 1 2 1 0 1 1 1 2 1 3 2 3 1 2 1 0 0 1 1 1 1 1 3 2 1 2 3 2 3 1 1 0 1 1 1 1 1 0 1 1 1 1 1 1 1 1 2 2 2 2 2 2 1 1 2 1 1 1 1 3 3 4 3 3 3]
+  [2 1 2 2 2 3 3 3 3 3 2 3 1 1 2 3 2 2 2 3 3 1 1 2 2 2 3 2 1 0 1 1 1 0 0 0 0 1 3 3 2 1 1 1 0 3 3 2 2 1 1 1 2 0 0 2 2 2 2 3 2 2 1 2 1 1 1 1 1 1 1 0 3 3 3 1 1 1 0 1 1 1 1 0 1 0 1 1 1 2 1 3 2 0 1 0 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2 2 2 1 2 1 2 2 2 3 2 1 2 2]
+  [3 2 3 3 3 3 3 4 3 2 3 3 2 3 1 2 3 2 3 3 3 2 1 2 2 2 3 1 1 0 1 1 1 0 0 0 0 2 3 2 1 1 1 1 1 3 2 1 3 3 3 3 3 1 1 1 1 1 2 2 2 2 2 2 1 1 2 1 1 1 2 0 3 3 3 1 1 2 0 1 2 2 1 2 0 1 0 1 1 3 2 2 1 1 1 0 0 1 0 0 1 0 0 0 0 0 1 1 1 1 1 1 2 1 2 2 1 2 2 2 1 2 2 2 1 1 1 1]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 2 3 3 3 3 3 3 2 2 2 3 2 0 1 0 1 0 1 0 0 1 0 2 3 3 2 1 2 1 1 1 2 0 1 1 2 1 0 0 1 1 1 1 1 1 1 1 3 3 1 1 2 1 3 1 1 0 3 3 3 1 2 1 1 1 1 1 2 2 2 1 3 3 1 3 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2 2 2 1 1 0 1 1 1 1 2 2 2 3 2 2 3 3 2]
+  [3 3 3 3 3 2 2 3 3 1 2 2 2 2 1 2 2 2 2 3 3 3 3 2 2 2 1 0 0 0 0 1 0 0 0 1 1 2 3 3 3 2 1 0 0 2 1 1 1 1 0 1 0 0 0 1 0 1 1 1 3 1 3 3 2 2 1 1 1 1 1 1 2 3 3 1 2 1 1 1 1 1 0 1 1 1 1 1 1 1 1 1 1 1 0 1 2 2 2 1 1 1 1 1 1 2 1 1 1 1 1 2 1 1 2 1 2 1 1 1 2 2 2 2 3 3 3 3]
+  [3 3 2 3 2 2 3 2 3 1 2 1 1 1 2 2 2 3 2 3 3 3 3 3 2 2 1 0 0 0 0 1 1 1 1 0 2 3 2 3 2 1 0 1 0 2 1 1 0 0 1 0 0 1 0 0 1 2 1 1 1 1 3 3 2 3 1 2 2 1 1 1 3 2 2 1 2 1 1 1 1 1 1 2 1 3 3 1 1 2 3 1 1 2 2 1 1 2 1 1 2 2 1 1 1 1 1 2 1 2 1 1 1 1 1 1 1 1 1 2 1 3 1 3 3 3 3 1]
+  [2 3 2 3 1 2 2 2 3 2 2 1 1 2 2 3 2 3 2 3 3 3 3 3 3 2 1 0 0 0 1 1 0 1 1 0 1 3 2 1 1 1 0 0 0 1 1 0 1 0 1 1 1 1 1 1 0 0 0 0 0 1 3 3 3 3 2 3 3 1 0 0 2 2 3 1 1 1 2 1 1 1 1 1 1 3 1 3 2 2 1 1 1 3 3 2 1 1 2 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 1 1 0 1 1 2 2 4 3 3 2 1]
+  [3 2 3 3 1 2 2 3 3 2 2 1 1 3 2 2 2 3 2 2 3 3 3 3 2 3 3 0 0 0 1 1 0 0 1 1 2 3 3 2 1 2 0 1 2 0 1 0 0 0 1 0 0 1 1 1 1 1 1 0 0 1 1 2 3 3 2 3 3 1 1 1 2 2 2 1 1 1 1 1 2 2 2 2 3 4 3 3 2 1 1 2 3 3 3 2 2 2 2 2 1 1 1 1 0 1 1 1 1 1 1 1 1 0 1 1 1 1 1 1 1 1 2 4 3 3 1 2]
+  [3 1 3 3 2 2 3 3 2 1 3 2 2 1 2 2 2 3 2 3 3 2 3 3 2 2 2 0 1 1 1 1 0 0 1 0 1 3 3 1 1 0 1 1 1 0 0 0 0 0 0 1 1 1 1 0 1 1 1 1 1 0 1 1 2 3 2 2 3 3 1 1 1 2 2 1 1 1 1 1 1 1 1 2 2 3 3 1 2 2 3 3 4 3 2 2 3 2 2 1 1 1 1 1 1 1 1 1 1 1 0 1 1 2 1 2 2 1 2 3 1 3 4 3 1 3 2 3]
+  [3 2 3 2 2 2 2 3 3 2 1 2 2 3 2 1 3 3 2 3 3 2 3 3 3 2 2 0 1 1 1 1 0 1 0 0 3 4 3 2 2 1 2 1 0 1 0 0 0 0 1 0 0 1 1 1 1 1 1 1 0 1 1 1 2 2 2 2 2 3 2 1 1 1 3 3 2 1 1 1 1 2 1 2 2 2 3 2 2 2 3 3 2 2 1 1 2 3 2 1 2 2 1 1 1 1 1 0 0 1 1 1 1 1 1 2 2 2 3 1 3 4 3 3 3 3 3 2]
+  [3 2 2 2 3 2 3 2 2 3 2 3 2 2 2 2 2 3 3 3 2 2 3 3 2 3 1 1 0 1 1 0 0 1 0 2 4 4 3 2 2 1 1 1 1 0 0 0 0 0 1 0 0 0 0 1 1 1 0 1 0 1 1 1 1 1 2 1 2 3 2 0 1 0 1 3 2 2 1 1 1 2 2 2 1 1 1 1 3 3 2 1 0 1 0 1 1 3 3 1 1 1 0 0 0 1 1 0 1 0 0 0 0 0 0 1 1 1 1 3 3 3 3 3 3 4 2 3]
+  [3 2 2 3 2 3 3 3 3 3 3 2 2 3 2 3 2 3 2 3 2 2 2 3 1 3 1 1 0 1 0 0 0 1 3 4 3 3 2 3 2 1 1 1 1 0 0 0 0 0 0 1 0 0 1 0 1 1 0 1 0 1 1 0 1 1 1 1 2 3 3 0 2 1 0 1 3 2 1 1 1 1 1 2 2 3 2 3 3 1 1 0 1 1 3 1 1 3 3 1 1 1 1 1 1 0 0 0 0 1 1 1 1 1 1 2 2 3 4 4 3 3 3 3 3 3 2 3]
+  [2 2 2 3 1 3 2 3 3 2 3 2 1 3 2 3 3 2 3 3 2 3 1 3 2 3 1 1 0 0 0 0 1 3 3 3 3 3 3 2 2 1 1 1 1 1 0 0 0 0 0 1 0 0 1 1 1 1 0 1 0 1 1 1 1 1 1 1 2 3 3 1 1 1 1 0 1 1 1 1 2 1 2 1 1 2 3 3 3 1 1 2 3 3 3 3 2 2 3 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 1 1 3 4 3 3 3 1 3 1 2 2 3 3]
+  [2 2 1 1 2 2 3 3 3 2 3 3 2 3 3 2 3 3 2 2 3 3 3 3 2 1 0 0 0 1 0 1 1 4 3 2 2 2 2 2 2 2 0 1 1 1 0 0 0 0 0 0 0 0 1 1 0 1 0 1 0 1 1 1 0 1 0 1 1 3 4 3 3 1 2 1 1 1 1 1 0 1 2 2 2 2 1 1 2 1 1 3 2 2 3 2 3 3 1 1 1 1 1 1 0 1 0 1 1 1 1 1 1 1 1 3 4 3 1 3 3 2 3 3 3 3 3 3]
+  [2 2 1 2 3 3 3 2 3 2 2 2 3 3 3 3 2 3 2 3 3 2 3 2 2 1 1 1 0 1 1 2 3 4 3 2 2 3 3 1 1 1 1 1 0 1 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 0 1 1 0 1 0 1 1 1 3 4 3 3 3 3 2 1 2 3 1 1 0 0 0 0 1 1 2 2 3 3 2 2 3 2 3 3 3 1 2 1 1 0 1 1 1 1 1 1 1 2 3 3 3 4 3 1 2 3 3 3 3 2 3 3 3 3]
+  [2 1 1 2 2 2 3 3 3 2 2 3 3 3 3 3 3 3 3 3 2 2 2 3 2 1 2 0 0 1 1 2 4 3 3 3 3 1 1 0 0 1 1 1 0 0 0 0 0 1 0 1 0 0 1 1 1 1 1 1 1 0 1 0 0 1 1 1 1 1 2 1 3 2 2 3 3 1 1 0 1 1 1 2 1 2 1 1 3 2 3 3 2 2 0 1 2 3 4 4 3 3 3 2 0 0 1 1 2 2 3 4 4 4 4 3 1 1 3 3 3 3 3 3 3 4 3 2]
+  [2 2 2 2 2 2 2 3 3 3 2 2 3 3 2 3 3 3 2 3 2 2 3 3 1 1 1 0 1 1 1 4 4 3 2 2 2 1 1 1 0 1 2 1 0 1 1 1 1 0 0 1 0 1 1 1 1 0 1 1 0 1 1 1 1 1 1 1 2 1 1 2 2 2 2 1 3 2 2 2 1 1 1 1 2 3 1 2 2 3 3 3 3 2 1 3 3 3 2 3 3 4 4 4 3 3 3 3 4 4 4 3 3 4 3 3 3 3 3 3 4 3 4 3 3 3 3 3]
+  [2 1 1 3 3 2 2 3 4 3 3 3 3 2 2 3 3 3 2 3 1 2 3 3 1 1 1 0 1 1 3 4 3 2 2 1 1 1 0 1 0 1 1 0 1 1 1 0 1 0 0 0 1 1 1 1 1 0 1 1 1 1 1 1 1 1 1 0 1 2 1 1 1 2 1 2 2 3 2 2 1 1 0 0 1 2 3 2 1 2 2 2 2 1 1 1 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 4 2 3 3 3 3 4 3 1 2 2 2 3 2 1]
+  [2 2 1 2 2 2 3 4 4 3 3 3 3 3 3 3 3 3 3 2 2 3 2 2 1 2 1 1 0 3 4 2 2 2 1 1 1 0 0 1 1 2 1 1 0 0 0 0 0 0 0 0 1 1 1 1 0 1 1 1 0 1 1 1 1 0 1 0 1 2 3 3 2 1 1 1 1 2 2 2 1 0 1 0 1 2 2 3 2 2 1 1 2 1 1 2 2 3 3 4 3 3 3 3 3 3 3 3 3 3 3 3 3 3 1 2 0 2 3 4 2 2 3 3 3 2 1 1]
+  [2 2 2 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 2 1 2 1 1 1 2 0 1 4 3 2 2 3 2 3 1 1 1 1 1 2 0 1 1 1 0 0 0 1 0 1 0 1 0 0 1 1 1 1 0 2 1 1 1 1 1 1 1 3 2 3 3 2 2 2 2 2 1 2 3 4 3 3 3 3 3 3 3 3 3 3 2 3 3 2 2 3 3 2 3 2 2 2 3 3 3 2 3 2 3 2 2 3 3 3 3 3 3 3 3 2 2 2 1 3 2 2]
+  [1 1 2 2 2 3 3 3 3 3 3 3 3 3 3 3 2 3 3 3 1 1 1 1 1 1 1 0 1 4 3 2 2 3 3 3 1 0 1 0 1 1 1 1 0 1 1 0 0 0 1 1 0 1 0 0 1 1 1 0 1 1 1 1 1 1 1 1 1 3 3 2 2 3 2 3 2 2 2 3 4 4 4 3 3 4 3 3 3 3 3 2 3 3 3 1 1 1 1 1 2 2 2 1 2 1 3 3 3 3 1 2 2 2 2 3 3 2 3 3 3 2 3 2 2 2 2 3]
+  [2 2 2 3 3 3 3 4 4 4 3 3 3 3 3 3 2 3 3 2 2 1 1 1 1 1 1 0 2 4 3 0 1 2 1 2 1 1 1 1 1 2 1 1 0 0 0 1 0 0 1 1 0 0 1 1 0 1 1 0 1 1 1 1 1 1 1 0 1 2 1 2 2 2 3 3 1 1 1 2 3 2 3 4 4 4 4 3 3 1 2 2 1 1 2 1 1 1 2 2 3 3 4 3 3 2 3 2 2 2 1 2 3 2 2 3 3 2 3 2 2 2 1 1 2 3 2 2]
+  [1 1 3 3 2 3 3 3 4 4 3 3 3 3 3 3 3 3 3 3 2 2 1 1 1 2 1 3 4 3 2 2 1 1 2 2 1 1 1 1 2 2 1 0 1 0 0 0 0 0 1 1 0 0 0 1 1 1 1 1 1 1 0 0 1 1 1 1 2 3 2 1 1 2 2 3 2 1 2 3 2 3 3 3 3 3 3 3 3 2 3 3 2 2 2 2 1 1 3 3 3 2 3 3 3 3 3 3 3 1 2 3 3 3 3 3 3 3 3 2 1 2 3 3 3 3 2 2]
+  [2 2 3 3 3 3 3 3 4 4 3 4 3 4 3 3 1 3 2 2 1 1 1 1 1 1 2 4 3 2 1 1 1 1 2 3 3 1 1 2 2 2 0 1 0 0 0 0 0 1 0 0 1 0 0 1 1 0 0 1 0 1 1 1 1 1 1 1 1 3 1 1 0 1 1 3 1 1 1 1 1 3 3 3 3 1 2 1 3 3 3 1 2 2 1 1 2 3 3 1 3 2 1 2 4 3 2 3 2 2 1 2 3 3 3 2 3 3 2 2 1 1 1 2 3 1 1 2]
+  [2 3 3 3 3 3 3 4 3 3 4 4 3 4 3 2 1 2 2 2 1 2 1 2 1 2 4 3 1 1 1 1 0 1 1 2 3 3 3 2 1 2 0 0 0 0 0 0 1 0 0 1 0 1 0 0 1 1 1 0 1 1 1 1 1 1 1 0 1 2 1 1 1 0 2 1 0 1 1 1 1 1 1 2 2 3 3 3 3 3 3 1 2 3 1 3 3 1 1 1 1 1 1 1 2 3 3 3 3 3 2 3 2 3 3 3 3 3 2 2 2 1 1 3 3 2 2 3]
+  [2 3 3 3 3 3 3 4 3 3 4 4 4 3 3 2 1 2 2 2 2 1 1 1 0 3 4 1 1 0 1 1 1 0 0 1 1 2 2 1 1 1 0 0 0 1 0 0 1 1 1 1 0 1 0 0 0 1 1 0 1 0 1 0 1 1 1 1 0 1 3 1 0 2 3 1 0 0 0 1 1 0 1 2 2 3 1 3 2 2 3 3 2 2 1 2 3 3 2 2 2 1 1 1 1 3 3 3 2 2 1 2 3 3 1 3 2 2 3 1 1 1 2 2 2 2 1 2]
+  [1 2 3 2 2 2 3 4 3 3 4 4 4 3 3 3 1 2 2 2 2 1 2 1 0 3 4 1 1 0 0 1 1 1 1 1 1 1 1 1 1 0 1 1 0 0 1 0 1 1 1 1 0 0 1 0 1 0 0 1 0 1 2 1 1 1 1 1 1 1 2 2 2 1 0 1 1 2 1 1 1 1 1 3 1 0 0 2 2 2 2 2 3 2 1 2 2 2 3 2 2 0 1 2 0 1 1 2 3 3 3 3 3 1 2 1 2 2 1 2 2 2 2 2 1 2 2 1]
+  [2 2 3 3 3 3 3 3 3 4 4 4 3 3 2 3 3 2 2 3 2 2 1 0 1 3 3 1 1 2 1 0 1 2 2 1 1 0 1 0 1 1 0 1 0 0 0 1 1 1 0 1 0 0 0 1 0 1 1 0 1 0 2 1 1 1 1 1 1 2 2 2 3 1 1 1 0 2 3 3 1 2 1 3 2 1 2 2 2 2 2 1 1 1 1 2 0 2 2 1 2 1 1 2 1 1 2 2 1 3 3 2 3 0 1 3 2 2 2 1 2 1 2 1 2 2 3 2]
+  [2 3 3 3 3 2 3 3 3 4 4 4 4 3 3 3 3 2 2 3 1 2 1 0 1 3 3 3 3 3 3 3 3 1 0 1 1 1 0 0 0 0 1 0 0 1 1 0 1 0 0 0 1 0 0 0 0 1 1 0 0 1 1 1 1 1 1 1 1 1 2 1 1 1 1 1 0 2 3 3 2 2 3 3 2 3 2 1 2 1 1 1 1 2 2 2 2 1 2 1 1 2 3 1 1 1 1 3 2 2 2 3 2 2 2 1 3 1 3 2 3 1 3 1 2 2 2 1]
+  [1 1 3 3 3 3 4 3 3 4 4 3 4 3 2 3 3 2 3 2 1 2 1 0 1 1 2 3 3 2 3 2 2 2 1 2 2 1 1 1 1 1 1 1 1 1 0 1 0 1 1 0 0 1 1 1 1 0 1 1 1 1 1 1 1 0 0 1 0 1 2 2 1 1 1 1 1 1 3 1 2 1 3 2 2 2 2 2 2 1 2 1 2 1 1 1 2 1 2 2 2 2 1 1 1 1 3 3 2 3 3 2 1 1 1 1 2 2 3 2 0 2 1 1 2 2 2 0]
+  [2 3 3 3 3 3 4 3 4 3 4 4 4 3 2 3 3 2 3 2 2 3 0 0 0 1 1 3 1 2 2 3 3 3 3 2 1 1 3 3 2 1 1 1 1 1 1 0 1 1 1 1 1 1 1 0 1 1 0 1 0 0 1 0 1 0 1 0 0 0 1 1 1 1 1 1 1 1 2 1 1 1 0 2 2 1 2 2 1 1 1 2 1 1 2 1 2 2 3 3 3 1 1 1 1 1 1 1 2 2 3 3 3 3 3 1 1 2 3 2 3 1 1 2 2 1 2 1]
+  [2 3 3 3 3 3 4 3 4 3 4 4 4 3 3 3 3 3 2 2 3 2 0 0 1 2 2 0 1 1 1 1 2 3 3 3 3 2 1 1 1 2 2 1 1 1 1 1 1 1 1 1 1 0 1 1 1 1 1 0 1 0 0 1 1 1 0 1 0 0 1 1 0 1 1 1 1 1 1 1 1 2 1 2 1 2 3 1 1 2 3 2 2 3 3 3 3 3 3 3 3 3 2 1 1 1 1 2 2 3 2 2 2 2 3 3 3 2 2 2 3 2 2 2 3 3 3 2]
+  [3 3 3 3 3 3 3 4 4 3 4 4 4 3 3 4 3 3 3 3 2 1 0 1 1 4 3 1 0 1 0 0 1 1 1 3 3 3 3 2 3 3 2 2 1 3 2 1 1 1 1 1 1 1 0 0 1 1 1 1 1 1 1 0 1 0 0 1 1 0 1 1 1 1 1 1 1 1 1 2 2 2 2 1 2 1 3 1 1 2 3 2 1 1 1 2 2 2 2 3 3 1 1 1 2 2 2 2 2 3 3 3 3 3 3 3 3 3 3 0 2 3 1 2 1 2 2 3]
+  [2 3 3 3 3 3 3 3 4 3 4 4 3 4 3 4 3 3 2 2 1 1 1 1 1 3 3 2 1 1 1 3 3 1 2 3 3 3 4 4 4 4 3 4 4 3 3 2 2 2 2 1 2 0 0 0 1 1 1 1 0 0 0 1 1 1 0 1 1 1 2 1 1 1 2 1 1 1 1 1 1 2 1 2 1 1 1 1 3 1 2 1 1 0 0 2 2 1 1 1 1 3 2 3 1 2 2 2 2 2 2 3 3 3 3 3 3 2 2 2 3 2 3 1 3 1 1 3]
+  [2 3 3 3 3 3 3 3 3 3 4 4 3 3 3 3 3 4 4 3 2 2 1 1 1 0 1 0 0 1 2 1 1 1 2 1 1 2 3 2 3 3 3 2 2 3 3 3 2 3 1 2 3 1 0 1 1 3 1 0 1 0 1 1 1 1 1 1 1 1 2 1 1 1 2 2 1 2 1 2 2 1 1 1 1 2 1 2 2 2 1 1 2 2 1 1 1 2 2 2 1 1 1 1 2 2 2 1 1 2 2 1 2 2 3 3 3 2 2 2 2 2 1 2 2 2 2 3]
+  [3 4 3 3 3 3 3 3 3 3 4 3 3 3 3 3 3 3 4 4 3 3 3 2 1 0 0 0 1 1 1 0 1 0 1 1 1 1 2 1 1 2 3 2 1 3 3 3 2 3 1 2 1 3 1 1 2 3 2 1 1 1 0 0 0 1 1 1 2 2 2 1 1 2 3 3 3 2 3 3 1 1 1 1 2 3 1 1 1 2 2 1 2 2 1 1 3 1 1 2 1 2 2 2 2 2 2 1 2 2 3 3 3 1 1 3 3 3 3 3 3 3 3 2 3 2 2 1]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 2 1 0 0 1 0 0 0 0 1 1 1 0 0 1 1 1 1 1 1 1 3 2 3 3 3 3 3 1 1 2 1 1 1 1 1 0 0 0 0 1 1 1 1 2 1 1 1 1 3 3 2 1 3 3 2 1 1 1 1 2 2 1 1 1 1 3 3 3 2 2 1 1 1 2 1 3 2 3 3 2 3 1 3 1 1 1 2 1 3 3 3 3 2 2 2 3 3 3 3 2 2 2 2]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 4 3 2 3 3 3 1 0 1 0 0 0 0 0 0 0 0 0 1 0 0 1 0 0 1 2 3 3 4 4 3 3 3 2 1 1 1 2 1 0 1 0 0 0 1 1 1 2 2 1 1 1 2 3 1 1 1 3 3 1 2 2 1 1 1 2 1 1 3 3 1 1 3 1 3 1 1 2 1 1 1 2 1 1 1 2 1 1 1 2 2 1 3 3 2 2 3 3 3 3 3 2 3 2 3 3 1 2]
+  [3 3 4 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 3 2 2 1 1 1 1 0 0 0 1 1 1 1 1 1 1 1 0 1 1 2 3 3 3 3 3 3 3 2 1 2 2 1 0 1 1 0 1 1 1 1 1 1 1 1 1 2 3 2 2 1 3 3 2 1 1 1 1 1 1 2 2 2 1 2 2 3 1 1 1 3 3 3 1 1 1 1 2 2 2 2 1 2 2 1 1 2 2 3 3 3 3 3 3 2 2 2 3 2 3 2 2]
+  [3 3 4 3 3 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 2 1 1 3 3 2 1 2 1 1 1 1 0 0 2 1 1 0 0 0 1 2 1 0 0 0 1 3 2 2 3 3 1 1 1 1 3 0 1 2 2 2 1 2 1 1 2 1 2 2 1 1 3 3 2 1 3 3 1 1 1 1 1 1 2 2 3 1 2 3 1 1 1 1 1 3 2 1 1 1 1 1 2 2 1 2 2 3 2 1 2 2 3 2 2 2 1 1 1 2 3 2 2 2 1 2 2]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 2 1 3 3 2 2 1 2 2 2 2 3 3 2 1 1 2 3 1 1 3 2 1 1 0 0 1 1 2 3 3 3 3 3 3 2 1 2 2 1 0 1 1 1 1 1 2 1 1 2 3 1 2 3 1 1 1 3 3 3 1 1 2 1 2 3 2 2 3 3 1 1 2 1 1 1 1 1 1 1 1 1 2 2 3 3 2 3 1 2 2 2 1 2 2 3 2 1 2 3 2 2 2 2 2 2 1]
+  [3 3 3 3 2 3 3 3 3 3 3 3 3 4 3 3 3 3 3 3 3 3 2 3 2 2 2 3 1 2 2 3 3 3 4 3 3 3 3 2 2 2 3 1 1 1 1 1 1 1 3 3 3 3 3 3 3 3 1 1 0 0 0 1 2 2 1 2 2 2 2 3 2 2 3 3 1 2 2 1 1 2 2 3 3 2 3 2 2 3 3 3 2 2 2 3 1 1 1 2 2 2 2 2 3 3 3 3 3 3 2 2 2 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3]
+  [3 3 2 1 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 1 2 1 1 2 3 3 3 3 1 1 3 2 2 3 3 2 3 2 1 0 0 2 3 0 0 1 3 1 3 3 3 1 1 2 2 2 1 1 1 1 1 1 1 1 1 2 2 1 1 2 3 2 2 1 0 1 2 1 3 1 2 2 2 2 2 1 3 1 2 1 1 1 1 1 2 3 1 2 2 2 2 3 2 1 1 2 2 2 2 1 2 2 3 3 2 2 1 2 3 3 3 1 3]
+  [3 3 2 3 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 3 2 2 1 2 1 3 3 3 3 3 3 1 2 2 3 2 1 2 3 2 3 2 3 4 3 2 2 3 1 0 0 2 3 2 3 3 2 2 2 2 3 2 1 0 1 1 2 1 1 1 2 2 1 1 2 3 2 2 2 1 1 2 3 2 2 2 1 3 2 3 2 3 2 2 2 2 3 1 2 1 3 3 2 2 2 3 3 3 3 3 2 2 2 2 3 3 3 3 3 2 2 3 3 3 3 2 3 2]
+  [3 3 3 3 3 3 3 3 3 2 3 3 2 3 3 2 2 2 2 2 1 3 1 3 3 3 3 2 3 2 2 2 2 1 2 1 1 2 2 1 1 1 2 2 3 3 1 1 1 2 0 1 4 3 3 3 3 2 2 1 2 1 1 1 1 1 2 2 1 1 2 2 1 1 1 2 2 2 1 1 1 1 3 2 2 3 2 2 1 2 2 2 1 1 2 3 2 2 2 1 1 1 2 3 2 2 1 1 2 3 2 2 2 2 2 2 2 2 1 2 2 3 3 2 2 2 2 3]
+  [3 3 4 3 3 3 3 3 3 3 3 3 1 3 3 3 2 2 1 1 2 1 2 3 3 2 3 3 2 1 2 1 2 1 0 2 1 1 1 0 0 0 1 1 1 3 1 1 1 2 1 0 2 3 3 2 2 3 2 2 1 2 1 2 1 1 2 2 1 1 3 2 2 1 1 1 2 3 2 2 1 2 2 2 2 2 2 2 2 1 2 2 2 3 2 3 3 3 2 2 1 2 2 2 1 1 2 3 2 3 3 2 1 2 2 2 2 3 3 3 3 3 3 3 3 3 2 3]
+  [3 3 3 3 3 3 3 3 3 2 3 3 3 3 3 3 2 2 2 2 3 3 4 3 3 3 3 2 3 2 2 2 2 1 1 2 1 1 1 0 1 0 1 1 1 3 3 2 1 2 3 0 0 1 3 3 3 3 3 2 2 2 2 1 1 1 2 2 2 1 2 2 2 1 2 1 2 2 3 2 1 2 2 3 2 1 3 1 2 2 2 2 3 3 3 3 2 3 2 2 2 2 2 2 2 2 2 1 1 1 1 3 3 3 2 2 3 3 3 3 3 3 3 3 2 2 3 2]
+  [3 3 3 3 3 3 2 3 3 2 3 3 3 2 2 3 2 2 1 3 3 3 3 3 3 3 3 3 2 2 2 2 2 2 1 1 2 1 1 1 1 1 1 1 1 3 3 3 2 3 2 1 0 0 2 2 3 3 3 3 1 2 2 2 2 1 1 3 2 1 1 2 1 3 1 3 2 3 3 2 1 2 2 3 2 2 2 2 1 2 2 1 3 2 3 2 2 2 1 2 1 1 2 2 2 2 2 1 1 2 3 1 3 1 1 3 3 3 3 3 3 3 2 3 2 3 3 3]
+  [3 3 3 3 3 3 3 3 2 3 3 2 1 1 2 3 3 4 3 3 3 3 3 3 2 3 2 2 1 1 1 2 2 2 2 1 1 1 1 0 1 0 0 1 0 1 3 3 3 2 1 1 0 0 0 1 1 3 3 3 3 3 2 2 2 1 1 2 2 1 1 1 2 2 2 2 2 3 3 2 1 1 2 3 2 1 3 2 1 2 3 2 3 3 2 1 1 1 2 3 2 2 1 2 2 2 3 2 2 3 3 3 3 2 2 2 3 2 3 3 3 3 2 3 3 3 2 3]
+  [2 3 3 3 3 2 3 3 3 3 1 1 1 3 3 3 4 3 3 3 3 3 3 3 2 2 3 1 1 2 2 2 3 2 2 1 1 1 3 1 0 0 1 1 1 0 1 3 3 3 2 1 0 0 0 0 1 2 3 2 3 3 3 2 1 2 1 2 2 2 2 2 1 2 2 2 2 3 2 3 2 1 1 2 2 2 2 3 2 2 3 3 3 2 2 3 3 1 2 3 1 2 3 2 3 3 2 2 3 3 2 1 2 3 2 3 3 2 3 3 3 3 3 3 3 3 3 3]
+  [3 3 3 3 3 3 3 3 3 1 3 3 3 4 3 3 3 3 3 3 3 3 3 3 3 2 2 1 1 1 2 2 2 1 1 2 1 0 2 1 1 0 0 1 0 1 0 1 1 3 3 3 1 1 1 1 1 1 2 3 3 3 3 3 2 1 2 2 2 3 3 2 2 1 2 2 1 3 3 3 1 2 2 2 2 1 1 3 1 2 3 3 3 2 1 2 3 2 2 2 2 2 2 3 2 2 2 2 3 1 1 2 2 2 3 2 2 2 2 3 3 3 3 3 3 3 2 2]
+  [3 3 2 3 3 2 1 1 2 3 4 4 4 3 3 3 3 3 3 3 3 3 3 3 1 1 1 2 2 1 2 2 2 2 1 2 1 1 1 1 0 1 0 0 0 1 1 0 1 1 3 4 1 3 1 1 1 0 1 1 2 3 3 3 3 2 3 3 3 2 3 3 2 2 2 2 2 3 3 2 2 2 2 2 2 2 2 3 3 2 3 2 3 3 2 2 2 2 3 3 2 3 1 3 3 2 2 3 3 2 2 2 1 2 2 3 3 3 3 3 3 3 3 3 3 3 3 2]
+  [3 1 3 3 3 2 3 3 4 4 3 4 4 3 3 3 3 3 3 3 3 3 3 3 2 1 1 1 1 2 2 2 2 1 2 1 1 2 1 1 1 1 0 0 0 1 1 0 1 1 0 3 3 3 3 1 1 0 0 0 1 3 3 3 3 3 3 1 2 3 3 3 2 3 2 2 2 2 3 2 3 3 2 3 2 2 2 2 2 2 3 2 3 3 2 3 3 2 3 3 2 3 3 3 3 2 3 2 3 2 3 2 1 3 3 2 3 2 3 3 3 3 2 2 2 1 2 3]
+  [3 3 3 4 4 4 3 4 4 3 3 3 3 3 3 3 3 3 2 3 2 3 3 2 2 3 2 2 2 2 3 2 3 2 2 2 2 1 2 1 1 1 1 0 1 0 0 0 1 1 1 1 3 3 3 3 2 2 1 0 0 0 1 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 2 2 2 3 2 3 2 2 3 1 2 3 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 2 3 3 3 3 3 3 3 3 2 2 2 2 1 1 3 3]
+  [4 4 4 3 3 3 4 4 4 4 3 3 3 3 3 3 3 3 3 3 3 2 1 1 2 1 2 2 2 1 2 1 2 1 1 2 2 1 1 1 1 1 1 0 0 1 0 0 1 0 1 1 1 2 3 3 3 4 4 3 1 1 0 1 2 2 3 3 3 3 3 3 3 3 3 2 2 2 3 3 3 2 2 2 2 3 3 3 2 3 2 1 1 2 2 2 3 2 3 3 3 3 3 3 3 3 2 2 3 3 2 3 3 3 3 3 3 3 3 2 2 2 2 1 3 2 2 2]
+  [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 2 2 1 2 1 2 1 2 2 2 1 1 2 1 3 1 2 1 1 1 1 0 1 0 0 1 0 1 0 1 0 1 1 3 2 1 2 3 3 3 3 2 1 1 2 1 3 3 3 3 3 3 3 3 2 2 3 2 2 2 3 2 2 3 2 3 3 1 3 3 1 2 2 2 1 3 1 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 2 0 2 2 2 2 1 2 1 2]
+  [2 3 3 3 3 4 3 3 3 3 3 3 3 4 4 4 3 3 3 2 1 2 1 1 1 1 2 3 2 2 2 2 1 2 1 2 1 1 2 1 0 1 1 0 1 0 1 0 0 0 1 0 1 1 1 3 2 3 3 3 3 4 3 1 1 1 2 1 1 2 3 2 3 3 3 3 3 3 3 2 3 3 3 2 3 3 3 1 1 2 2 1 1 2 2 1 3 1 3 2 2 3 3 3 3 3 3 4 3 3 3 3 3 3 3 3 3 3 1 1 1 1 1 1 1 1 1 1]
+  [3 3 3 3 4 4 4 4 3 3 3 3 3 4 3 3 2 3 2 3 2 2 2 1 1 2 2 2 1 2 1 1 1 1 2 2 1 1 1 1 1 1 1 0 1 0 1 0 0 1 0 1 1 1 1 1 2 2 1 1 2 3 4 3 1 0 2 3 2 3 3 2 3 3 2 3 3 3 3 3 3 3 2 3 2 3 2 2 1 2 3 2 1 3 2 1 2 2 3 2 3 3 3 3 3 2 3 3 3 3 3 3 3 3 3 4 3 3 3 0 1 1 1 1 2 2 2 2]
+  [3 3 3 3 4 3 3 3 3 3 3 3 3 3 3 3 2 2 2 1 2 1 2 1 1 1 2 2 2 3 2 1 2 1 1 2 2 1 1 1 1 0 0 1 0 1 1 0 0 1 0 1 0 0 1 0 1 0 0 0 1 3 3 3 3 1 0 2 2 2 4 2 2 3 3 3 3 2 3 3 3 3 3 2 2 3 3 3 1 1 2 1 1 2 2 2 2 2 1 1 2 3 3 3 3 2 2 3 3 3 3 3 3 3 3 3 3 3 1 1 1 0 1 2 1 2 1 1]
+  [4 4 4 3 3 3 2 3 3 3 3 3 3 2 1 3 3 2 2 2 1 2 2 1 1 1 3 1 2 2 1 1 2 1 1 2 2 1 2 1 1 0 1 0 1 1 1 0 0 1 0 1 0 0 0 0 2 1 1 0 1 1 3 3 3 1 0 1 1 1 3 3 2 1 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 1 2 1 1 2 1 3 1 1 2 2 2 3 3 3 3 1 2 3 3 3 3 3 2 3 3 3 3 3 2 2 0 0 0 1 1 1 1 1]
+  [4 4 4 3 3 3 3 3 3 3 3 3 2 3 2 3 3 3 2 3 2 2 2 2 2 1 2 2 2 2 2 1 1 2 1 1 1 1 1 1 1 1 0 1 1 1 1 1 0 1 0 1 0 0 0 0 2 1 2 2 1 0 3 4 3 1 1 0 2 2 3 3 3 2 3 3 3 3 3 3 3 3 3 2 3 3 3 2 3 1 2 2 2 2 1 2 3 2 2 2 2 3 2 2 2 3 2 2 2 3 3 3 3 3 3 3 3 3 1 1 1 1 1 1 1 1 2 1]
+  [4 4 4 3 3 3 3 3 3 3 3 2 3 3 2 3 3 2 2 2 2 3 2 2 2 2 1 3 2 2 1 2 1 2 1 1 1 1 1 1 0 1 1 0 2 1 1 1 0 1 0 1 0 0 0 0 1 2 2 1 1 0 2 3 3 1 0 0 1 2 3 3 2 2 2 3 3 3 3 3 3 3 3 2 2 3 3 2 3 2 2 1 2 1 2 2 3 2 1 3 2 2 2 3 2 3 2 2 3 3 3 3 3 3 3 3 2 3 2 2 1 1 1 1 1 1 2 1]
+  [4 4 4 4 3 3 4 3 3 2 3 1 1 2 3 3 3 2 2 2 3 3 2 2 2 3 2 2 2 2 1 3 2 1 1 1 1 1 2 0 1 1 0 1 1 1 0 1 1 1 0 1 0 0 0 0 1 1 3 2 2 1 2 4 3 1 0 1 1 3 3 3 3 1 3 3 3 3 3 3 3 3 3 3 2 2 3 3 1 2 2 3 2 2 3 2 3 1 1 3 2 1 2 2 2 3 2 2 3 3 3 3 3 3 3 1 2 1 2 1 1 2 1 1 2 2 3 1]
+  [2 3 4 4 3 3 4 4 3 2 2 1 2 2 3 3 2 3 2 3 2 2 3 3 1 3 2 1 3 2 1 3 2 1 1 1 1 1 1 0 1 1 0 1 0 1 1 1 1 1 1 1 0 0 1 0 0 0 1 3 2 1 3 3 3 2 0 1 1 3 4 2 3 1 3 3 3 3 2 3 4 3 3 3 2 2 3 3 2 3 2 3 1 2 3 2 3 1 2 1 2 1 3 2 3 3 3 3 3 3 3 3 3 2 2 2 2 2 2 2 1 2 1 1 2 2 2 2]
+  [3 3 3 4 4 3 3 4 3 2 2 1 3 3 3 3 3 3 2 2 2 2 2 3 2 2 1 2 3 3 1 2 1 1 1 1 1 0 1 1 0 0 1 0 1 1 1 1 0 1 1 1 0 1 0 0 0 0 0 2 3 3 4 3 3 1 1 1 1 3 3 2 3 1 3 3 3 3 3 3 3 3 3 3 3 3 2 3 3 2 2 2 1 1 2 2 2 1 1 2 1 1 2 3 3 3 3 4 3 3 3 2 2 2 2 2 2 2 1 1 1 2 1 2 1 2 2 2]
+  [3 3 3 3 3 3 3 3 3 2 2 3 3 3 3 3 2 2 2 2 2 2 2 3 2 2 1 2 2 1 0 1 2 1 1 1 1 1 1 1 0 1 0 1 0 1 0 1 1 0 1 1 1 1 0 0 0 1 1 1 2 2 4 3 2 0 1 1 2 3 3 2 3 2 3 3 2 3 3 3 3 3 3 2 3 3 3 3 2 2 2 2 2 2 2 2 2 1 1 3 3 2 2 3 2 3 3 3 3 3 3 1 2 1 3 2 1 2 2 2 1 3 2 2 2 2 2 2]
+  [3 3 3 3 3 2 2 3 3 3 3 3 3 3 3 3 3 3 1 2 2 3 2 2 2 2 2 2 2 1 1 2 1 1 1 1 1 1 1 0 0 1 0 1 0 1 0 1 1 1 1 1 1 1 0 1 1 1 1 1 1 2 4 3 1 1 1 1 3 3 2 3 2 2 3 2 2 3 3 3 3 3 3 3 2 3 3 3 2 2 2 2 2 2 2 3 1 1 2 3 2 2 2 3 3 3 3 3 3 2 3 2 2 2 2 2 2 1 1 2 2 2 1 1 3 2 2 1]
+  [3 2 3 3 3 3 3 3 3 3 2 2 3 3 3 3 3 3 2 2 3 3 2 1 2 3 2 2 1 1 2 1 1 1 1 1 1 0 1 1 1 1 0 1 0 0 1 0 1 1 1 1 1 1 0 1 0 0 1 1 1 3 3 2 2 1 0 2 3 3 2 1 1 2 3 3 3 3 3 3 3 3 3 3 3 2 2 2 2 2 2 1 2 2 3 1 1 2 2 1 2 2 3 3 3 3 2 3 3 2 1 3 3 3 2 3 3 2 2 2 3 1 2 2 3 2 3 3]
+  [3 3 2 3 3 3 3 3 3 3 2 2 4 3 3 3 3 3 2 2 2 3 3 1 3 2 2 1 1 1 2 1 1 1 1 1 1 0 2 1 1 1 0 1 0 0 1 0 1 0 1 1 1 1 1 1 0 1 1 1 1 3 3 2 1 0 1 3 3 3 2 1 2 1 3 2 3 4 3 3 3 3 3 3 2 3 2 3 3 2 2 1 2 2 3 2 2 2 2 1 2 2 3 2 3 3 1 3 3 3 2 3 2 1 2 2 2 2 3 2 3 3 2 1 2 2 2 2]
+  [3 2 3 3 3 4 3 3 3 3 2 3 4 3 3 3 2 2 2 2 3 3 2 2 2 1 2 1 2 2 1 1 1 1 1 2 1 0 1 0 1 1 0 1 0 0 1 0 1 0 1 2 1 1 1 1 1 1 1 1 3 4 3 0 0 1 3 3 3 2 2 1 1 1 2 1 3 4 4 4 4 3 3 3 3 3 3 3 3 3 1 1 2 2 2 2 3 3 2 2 2 3 3 3 3 2 2 1 2 3 1 1 1 2 1 2 1 2 2 2 2 3 2 1 3 3 3 1]
+  [2 2 2 3 4 4 3 3 3 3 2 3 3 3 3 2 3 2 3 3 3 2 2 2 2 2 2 1 2 2 2 1 1 1 1 1 1 1 2 0 1 1 0 1 0 0 1 0 0 1 1 1 1 1 1 1 1 1 2 3 3 3 1 0 0 3 3 2 1 1 1 1 1 1 2 1 1 3 4 4 4 4 4 3 3 3 3 3 3 3 2 2 2 2 3 2 3 2 3 2 2 3 3 3 3 2 2 1 1 1 2 1 2 2 2 2 2 1 1 1 3 2 3 1 2 3 2 1]
+  [2 2 3 3 3 4 4 3 3 3 3 3 3 3 3 3 3 3 2 2 2 2 2 3 3 2 3 3 3 1 2 1 1 1 1 1 1 0 1 1 0 1 0 0 0 0 1 0 0 1 1 1 1 2 1 1 2 2 3 3 3 2 1 0 1 3 3 3 1 1 1 0 1 1 1 2 1 3 4 4 3 3 3 3 3 4 3 3 3 3 3 2 2 2 2 3 3 2 3 1 3 3 3 3 3 2 1 1 1 3 1 1 1 2 1 1 2 1 1 2 3 2 2 3 2 2 2 1]
+  [3 3 3 3 4 4 4 3 3 3 3 3 3 3 3 3 3 3 2 3 2 2 2 2 3 3 3 3 3 1 1 1 1 2 1 1 1 1 1 0 1 0 0 1 1 0 1 0 0 2 2 2 1 3 1 1 2 2 4 3 1 0 1 1 2 3 3 3 1 1 2 1 1 1 2 2 3 3 3 4 4 4 3 3 3 4 3 4 3 3 3 3 3 3 3 3 3 1 2 2 3 3 3 3 3 2 1 2 1 3 3 1 2 1 1 2 2 2 2 3 3 2 2 2 2 2 2 2]
+  [2 1 3 4 4 4 3 3 3 3 3 3 4 3 3 3 3 2 2 3 2 3 2 2 3 3 2 3 3 1 2 1 1 2 2 0 1 1 1 1 1 1 1 1 1 1 1 1 2 1 1 1 3 2 1 1 3 3 3 1 0 1 2 1 3 3 3 3 3 1 3 3 1 1 1 3 3 3 3 4 4 4 3 3 4 3 3 3 3 3 3 3 3 3 2 3 3 1 2 2 2 3 3 3 3 1 2 2 2 3 2 2 3 3 1 3 3 3 2 3 3 3 2 2 2 2 2 2]
 ]
 end
 ]]></code>
   <widgets>
-    <view x="368" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="-56" height="570" showTickCounter="true" patchSize="10.0" fontSize="10" wrappingAllowedY="false" width="888" tickCounterLabel="ticks" maxPycor="0" updateMode="0" maxPxcor="88" minPxcor="0"></view>
+    <view x="525" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="-127" height="768" showTickCounter="true" patchSize="6.0" fontSize="10" wrappingAllowedY="false" width="768" tickCounterLabel="ticks" maxPycor="0" updateMode="0" maxPxcor="127" minPxcor="0"></view>
     <monitor x="10" precision="0" y="85" height="60" fontSize="11" width="110" display="Allied Casualties">allied_casualties</monitor>
     <monitor x="135" precision="17" y="85" height="60" fontSize="11" width="125" display="Insurgent Casualties">taliban_casualties</monitor>
     <button x="65" y="5" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="55" display="go">go</button>
     <button x="5" y="5" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="55" display="setup">setup</button>
+    <plot x="5" autoPlotX="true" yMax="10.0" autoPlotY="true" y="150" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="230" display="Taliban Casualties">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot taliban_casualties</update>
+      </pen>
+    </plot>
+    <plot x="240" autoPlotX="true" yMax="10.0" autoPlotY="true" y="150" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="230" display="Coalition Casualties">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot allied_casualties</update>
+      </pen>
+    </plot>
+    <chooser x="5" y="330" height="60" variable="allied_weapon_selection" current="0" width="250" display="allied_weapon_selection">
+      <choice type="string" value="M4"></choice>
+      <choice type="string" value="M4A1"></choice>
+      <choice type="string" value="XM7"></choice>
+    </chooser>
   </widgets>
   <info>## WHAT IS IT?
 
