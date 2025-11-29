@@ -1,25 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<model version="NetLogo 7.0.2" snapToGrid="true">
-  <code><![CDATA[  turtles-own [
-  base-speed
+<model version="NetLogo 7.0.0-beta2" snapToGrid="true">
+  <code><![CDATA[
+
+turtles-own [
   unit-id          ;; Integer - unique ID number of unit
-  role             ;; String  - unit type/role
-  weapon           ;; String  - current equipped weapon
-  weapon_range     ;; Integer - effective range of weapon
-  weapon_operational ;; Boolean - Whether the weapon is functional
-  weapon_malfunction_chance ;; Float - probability of malfunction on each shot
-  ammo             ;; Integer - ammo in current weapon
-  accuracy         ;; Float   - accuracy of fire
-  speed            ;; Float   - current movement speed
-  posture          ;; String  - how unit is positioned
+  role             ;; String  - "Allied" or "Taliban" to set allegiance
+  weapon-design    ;; Striing, name of weapon for pulling specs
+  weapon-training      ;; List[Float] modifiers for engaging with the six range brackets 
+  weapon-operational   ;; Boolean - Whether the weapon is functional
+  base-speed
+  posture
+  last-speed
+  current-weapon-ammo             ;; Integer - ammo on hand
+  current-weapon-heat
   suppression      ;; Float   - how heavily the unit is being fired upon
-  is_alive    ;; Boolean - Whether the agent is alive
-;;  initial-state    ;; String  - state rolled when injured
-;;  current-state    ;; String  - unit's current state
-  weapon_max_accuracy       ;; max hit probability at optimal range
-  weapon_min_range          ;; distance at which max accuracy applies
-  weapon_max_range          ;; maximum effective range
-  weapon_accuracy_dropoff   ;; accuracy penalty per patch
+  hit_points ;; Float - replacing "is_alive" to allow some play in what happens on a hit
 ]
 
 patches-own [ 
@@ -38,56 +33,44 @@ globals [
   allied_casualties
   cover-points
   impassible-elevation-points
+  weapon-specs     ;; list of weapon definitions
+  range-bands      ;; ["min" "cqc" "short" "medium" "long" "extreme"]
+  training-levels  ;;[float,float,float,float,float,float] - a list of six floats to assign positive / negative modifers for different range brackets
 ]
+
+
 breed [us-army us-solider]
-breed [ana-army ana-solider]
 breed [taliban-army taliban-solider]
 
-to initialize-agent-parameters
+to initialize-agent-parameters [faction wep-name training-index]
   set unit-id who
-  set weapon "Rifle"
-  set weapon_range 0
-  set weapon_operational true
-  set weapon_malfunction_chance 0.05
-  set ammo 20
-  set accuracy 1.0
-  set speed base-speed
+  set role faction
+  set weapon-design wep-name
+  set weapon-training item training-index training-levels
+  set weapon-operational true
+  set base-speed 1
   set posture "Upright"
-  set suppression 0
-  set is_alive true
-  set-weapon-parameters
-;;  set initial-state "None"
-;;  set current-state "Normal"
+  set last-speed 0
+  set current-weapon-heat 0.0
+  set suppression 0.0
 end
 
-to set-weapon-parameters  ;; turtle procedure
-  ;; set max hit probability based on unit type
-  if role = "allied" [ set weapon_max_accuracy 0.9 ]
-  if role = "taliban" [ set weapon_max_accuracy 0.8 ]
-
-  ;; set min range for near-perfect hits
-  if weapon = "Rifle" [ set weapon_min_range 50 ]
-  if weapon = "RPG" [ set weapon_min_range 30 ]
-  if weapon_min_range = 0 [ set weapon_min_range 20 ]
-
-  ;; set max effective range
-  set weapon_max_range weapon_range
-
-  ;; calculate accuracy dropoff per patch
-  ifelse (weapon_max_range - weapon_min_range) > 0 [
-    set weapon_accuracy_dropoff (weapon_max_accuracy - 0.05) / (weapon_max_range - weapon_min_range)
-  ] [
-    set weapon_accuracy_dropoff 0.0
-  ]
-end
-
+  
 to setup
   clear-all
   set-patch-size 10
   resize-world 0 88 -56 0
   paint-battlefield battlefield-data
-  reset-ticks
+  reset-ticks 
   
+  set training-levels [[0 0 0 0 0 0] [0 0.4 0.2 0 -0.2] [0 0.2 0.1 -0.1 -0.4]]
+  set range-bands ["min" "cqc" "short" "medium" "long" "extreme"]
+  set weapon-specs [            
+    ["M4" [0 25 100 300 500 800] 12 1 1 360]
+    ["AK47" [0 25 75 250 400 600] 8 1 1 210]
+  ]
+
+    
   set taliban-starting-points patches at-points [
     [28 -9] [29 -9] [30 -9] [31 -9] [32 -9]
     [28 -10] [29 -10] [30 -10] [31 -10] [32 -10]
@@ -151,27 +134,27 @@ to setup
   ]
   
   set cover-points patches at-points [
-     [33.00 -23.00]
-  [33.00 -21.00]
-  [35.00 -26.00]
-  [35.00 -24.00]
-  [35.00 -18.00]
-  [36.00 -27.00]
-  [40.00 -27.00]
-  [41.00 -26.00]
-  [41.00 -18.00]
-  [43.00 -25.00]
-  [44.00 -22.00]
-  [38.00 -17.00]
+    [33.00 -23.00]
+    [33.00 -21.00]
+    [35.00 -26.00]
+    [35.00 -24.00]
+    [35.00 -18.00]
+    [36.00 -27.00]
+    [40.00 -27.00]
+    [41.00 -26.00]
+    [41.00 -18.00]
+    [43.00 -25.00]
+    [44.00 -22.00]
+    [38.00 -17.00]
   ]
   
   set impassible-elevation-points patches at-points [
-     [31.0 -18.0]
-  [26.0 -36.0]
-  [33.0 -15.0]
-  [50.0 -16.0]
-  [60.0 -38.0]
-  [52.0 -51.0]
+    [31.0 -18.0]
+    [26.0 -36.0]
+    [33.0 -15.0]
+    [50.0 -16.0]
+    [60.0 -38.0]
+    [52.0 -51.0]
   ]
   
   ask cover-points [
@@ -192,53 +175,26 @@ to setup
     set is_ressuply true
     set pcolor green
   ]
-  
+
   create-taliban-army 103 [
     move-to one-of taliban-starting-points
     set color red
     set size 1
     set shape "square"
     set base-speed 1
-    set role "taliban"
-    initialize-agent-parameters
-    ;; Randomly include Rocketeers
-    if random-float 1.0 < 0.08 [
-      set weapon "RPG"
-      set accuracy 0.4
-      set shape "triangle"
-      set ammo 5
-      set color orange
-      set weapon_range 900
-  ]
-    
-    set accuracy 0.2
-    set weapon_range 100
-    
+    initialize-agent-parameters "taliban" "AK47" 2
   ]
 
-  create-ana-army 10 [
-    move-to one-of ana-starting-points
-    ;;set color green
-    set color blue
-    set size 1
-    set shape "square"
-    set base-speed 1
-    ;;set role "ana"
-    set role "allied"
-    initialize-agent-parameters
-  ]
-
-  create-us-army 72 [
+  create-us-army 82 [
     move-to one-of us-starting-points
     set color blue
     set size 1
     set shape "square"
+    set weapon-design "M4"
     set base-speed 1
-    set role "allied"
-    initialize-agent-parameters
-    set weapon_range 600
-    set accuracy 0.9
+    initialize-agent-parameters "allied" "M4" 1
   ]
+  
   set taliban_casualties 0
   set allied_casualties 0
   reset-ticks
@@ -259,10 +215,11 @@ to paint-battlefield [data]  ;; data = list of rows, top->bottom; each row is li
   ]
 end
 
+
 to go
   ask turtles [
     check_survival
-    if ammo <= 0 [
+    if current-weapon-ammo <= 0 [
       if role = "taliban"[
         taliban_ammo_out
       ]
@@ -271,8 +228,8 @@ to go
       ]
     ]
     ;; Unjam Weapon
-    if not weapon_operational [
-      set weapon_operational true
+    if not weapon-operational [
+      set weapon-operational true
       stop
     ]
     ;; Attack
@@ -281,6 +238,7 @@ to go
   ]
   tick
 end
+
 
 ; Agent Movement Behavior
 to move ; turtle procedure
@@ -308,19 +266,15 @@ to move ; turtle procedure
 end
 
 to taliban_ammo_out
-  if weapon = "RPG" [
-    set weapon "Rifle"
-    set accuracy 0.2
-    set weapon_range 200
-    set ammo 20
+  if weapon-design = "RPG" [
+    set weapon-design "Rifle"
+    set current-weapon-ammo 210
     set color red
     set shape "square"
     stop
   ]
-  
-  
-    if pxcor = max-pxcor or pxcor = min-pxcor or
-       pycor = max-pycor or pycor = min-pycor [
+      if pxcor = max-pxcor or pxcor = min-pxcor or
+      pycor = max-pycor or pycor = min-pycor [
       die
       stop
     ]
@@ -357,12 +311,12 @@ to taliban_ammo_out
     ]
   
     stop
-  
 end
+
 
 to allied_ammo_out
   if [is_ressuply] of patch-here = true [
-    set ammo 20
+    set current-weapon-ammo 20
     stop
   ]
   let resupply-patches patches with [ is_ressuply = true ]
@@ -372,15 +326,15 @@ to allied_ammo_out
       face nearest
       move
     if [is_ressuply] of patch-here = true [
-      set ammo 20
+      set current-weapon-ammo 20
     ]
   ]
   stop
-
 end
 
+
 to check_survival 
-  if not is_alive [
+  if (hit_points <= 0) [
       ;; Increment casualty count for side, remove agent
       if role = "allied" [
         set allied_casualties allied_casualties + 1          
@@ -395,18 +349,19 @@ to check_survival
 end
   
 to attack
-  if (not is_alive) [ stop ]
-  let range_in_patches weapon_range / (sqrt 7.8125)
+  if (hit_points <= 0) [ stop ]
+  let range_in_patches Item 6 weapon-brackets ["M4"] / (sqrt 7.8125) ;;
   ;; figure out who counts as an enemy
   let enemies nobody
   if role = "taliban" [
     set enemies turtles with [
-      is_alive and role = "allied"
+      (hit_points > 0) and role = "allied"
     ]
   ]
+  
   if role = "allied" [
     set enemies turtles with [
-      is_alive and role = "taliban"
+      (hit_points > 0)  and role = "taliban"
     ]
   ]
 
@@ -421,8 +376,6 @@ to attack
     ]
   ]
   
-  
-  
   if not any? visible-enemies [ 
     ;; Move if no enemies in range
     move
@@ -430,38 +383,40 @@ to attack
   ]
   
   let target min-one-of visible-enemies [ distance myself ]
+  let engagement-range distance target * 7.8125
+  let engagement-bracket weapon-range-band "M4" engagement-range
+  let accuracy-mod 0.5
+  if engagement-bracket = "cqc" [set accuracy-mod accuracy-mod + (Item 1 weapon-training)]  ; CQC
+  if engagement-bracket = "short" [set accuracy-mod accuracy-mod + (Item 2 weapon-training)]  ; short
+  if engagement-bracket = "medium" [set accuracy-mod accuracy-mod + (Item 3 weapon-training)]  ; medium
+  if engagement-bracket = "long" [set accuracy-mod accuracy-mod + (Item 4 weapon-training)]  ; long
+  if engagement-bracket = "extreme" [set accuracy-mod accuracy-mod + (Item 5 weapon-training)]  ; extreme
+
+  ;;set range-bands ["min" "cqc" "short" "medium" "long" "extreme"]
+  
   ;; fire one shot
-  set ammo ammo - 1
+  set current-weapon-ammo current-weapon-ammo - 1
   
   ;;check what patch the turtle is on
-  let cover_mod 0
+  let cover-mod 0
   if patch-here != nobody[
     if [pcolor] of patch-here = white[
-      set cover_mod 0.1
+      set cover-mod 0.1
     ]
   ]
   
+  set accuracy-mod accuracy-mod + cover-mod
  ;; distance-based accuracy calculation
-let dist-to-target distance target
-let shooter-accuracy accuracy
-let min-range weapon_min_range
-let dropoff weapon_accuracy_dropoff
-
-let effective-accuracy shooter-accuracy - cover_mod
-if dist-to-target > min-range [
-  let distance-penalty (dist-to-target - min-range) * dropoff
-  set effective-accuracy max list (effective-accuracy - distance-penalty) 0.0
-]
-
-;; attempt shot
-if random-float 1.0 < effective-accuracy [
-  ask target [ set is_alive false ]
-]
-
-;; Check if weapon malfunctioned
-if random-float 1.0 < weapon_malfunction_chance [
-  set weapon_operational false
-]
+  
+  ;; attempt shot
+  if random-float 1.0 > accuracy-mod [
+    ask target [ set hit_points 0.0 ]
+  ]
+  
+;  ;; Check if weapon malfunctioned
+;  if random-float 1.0 < weapon_malfunction_chance [
+;    set weapon-operational false
+;  ]
 end
 
 
@@ -473,7 +428,6 @@ to move_default
   ]
   move
   stop
-  
 end
 
 
@@ -501,15 +455,80 @@ to-report clear-line-of-sight? [tgt]
   report true
 end
 
+
 to-report speed-factor [c]
   if c = 0 [ report 1.0 ]  ; slope 0° - 10°
-  if c = 1 and c > 2.4 [ report 0.45 ]  ; slope 11° - 20°
-  if c = 2 and c > 4.1 [ report 0.17 ]  ; slope 21° - 30°
-  if c = 3 and c > 4.7 [ report 0.06 ]  ; slope 31° - 40°
+  if c = 1 [ report 0.45 ]  ; slope 11° - 20°
+  if c = 2 [ report 0.17 ]  ; slope 21° - 30°
+  if c = 3  [ report 0.06 ]  ; slope 31° - 40°
   if c = 4 or c = yellow [ report 0 ]  ; slope 41°; agent will try to go around this patch
   report 1.0 ; default
 end
 
+
+;;############################Logic for accessing specs of an agent's current weapon (which are global)#####$
+
+to-report weapon-spec [wep-name]  ;; gets the weapon "class" based on string name
+  ;; find the spec list whose first item (name) matches wname
+  let matches filter [ ws -> item 0 ws = wep-name ] weapon-specs
+  ifelse any? matches [
+    report first matches
+  ] [
+    user-message (word "Unknown weapon type: " wep-name)
+    report nobody
+  ]
+end
+
+
+to-report weapon-brackets [wep-name]
+  let spec weapon-spec wep-name
+  report item 1 spec
+end
+
+to-report weapon-rpt [wep-name]
+  let spec weapon-spec wep-name
+  report item 2 spec
+end
+
+to-report weapon-heat-per-shot [wep-name]
+  let spec weapon-spec wep-name
+  report item 3 spec
+end
+
+to-report weapon-damage [wep-name]
+  let spec weapon-spec wep-name
+  report item 4 spec
+end
+
+to-report weapon-fighting-load [wep-name]
+  let spec weapon-spec wep-name
+  report item 5 spec
+end
+
+to-report weapon-range-band [wep-name target-range]
+  let ranges weapon-brackets wep-name
+  if ranges = nobody [ report nobody ]
+
+  ;; If beyond extreme, say so explicitly
+  if target-range > last ranges [
+    report "beyond"
+  ]
+
+  ;; Find the first index where distance <= that threshold
+  let range-indx 0
+  while [range-indx < length ranges and target-range > item range-indx ranges] [
+    set range-indx range-indx + 1
+  ]
+
+  ;; Out of bounds coverage
+  if range-indx >= length range-bands [
+    report "beyond"
+  ]
+
+  report item range-indx range-bands
+end
+
+;;;; BATTLEFIELD DATA 
 to-report battlefield-data
   report
 [
@@ -574,7 +593,7 @@ to-report battlefield-data
 end
 ]]></code>
   <widgets>
-    <view x="368" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="-56" height="570" showTickCounter="true" patchSize="10.0" fontSize="10" wrappingAllowedY="false" width="888" tickCounterLabel="ticks" maxPycor="0" updateMode="0" maxPxcor="88" minPxcor="0"></view>
+    <view x="368" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="-56" height="570" showTickCounter="true" patchSize="10.0" fontSize="10" wrappingAllowedY="false" width="890" tickCounterLabel="ticks" maxPycor="0" updateMode="0" maxPxcor="88" minPxcor="0"></view>
     <monitor x="10" precision="0" y="85" height="60" fontSize="11" width="110" display="Allied Casualties">allied_casualties</monitor>
     <monitor x="135" precision="17" y="85" height="60" fontSize="11" width="125" display="Insurgent Casualties">taliban_casualties</monitor>
     <button x="65" y="5" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="55" display="go">go</button>
