@@ -17,6 +17,14 @@
   cas-arrival-tick
   taliban-start-count
   allied-start-count
+  total-stoppages ;; total / taliban not super relevant
+  allied-stoppages
+  taliban-stoppages
+  ;;wave1-fraction ;;handled by monitor
+  wave2-fraction
+  ;;wave2-start-tick ;;handled by monitor
+  pending-wave2
+
 ]
 
 
@@ -38,7 +46,10 @@ turtles-own [
   mag-rounds ;; Int - how many rounds are in the mag currently
   reload-ticks ;; Int - how many ticks it takes to reload
   jam-ticks ;; Int - how many ticks it takes to clear a jam/malfunction
-  morale ;; Float - 'Morale level' that helps determine behaviour/when it's time for taliban to run
+  ;;morale ;; Float - 'Morale level' that helps determine behaviour/when it's time for taliban to run
+  witnessed-kia ;;
+  withdrawing?;;
+  
 ]
 
 patches-own [ 
@@ -52,16 +63,34 @@ patches-own [
 breed [us-army us-solider]
 breed [taliban-army taliban-solider]
 
+
+
+;;###################################################################################################################################################################
+to spawn-taliban [n]
+  create-taliban-army n [
+    move-to one-of taliban-starting-points
+    set color red
+    set size 1
+    set shape "square"
+    set base-speed 1
+    initialize-agent-parameters "taliban" "AK47" 2
+  ]
+end
+
+
+
 to initialize-agent-parameters [faction wep-name training-index]
   set unit-id who
   set role faction
   set weapon-design wep-name
+  set withdrawing? false
 
   set weapon-training item training-index training-levels
   if length weapon-training < length range-bands [
     set weapon-training sentence weapon-training n-values (length range-bands - length weapon-training) [0]
   ]
-
+  
+  set witnessed-kia 0
   set weapon-operational true
 
   ;; movement
@@ -71,9 +100,15 @@ to initialize-agent-parameters [faction wep-name training-index]
   ;; combat state
   set current-weapon-heat 0
   set suppression 0
-  set max-hit-points 100
+  ;; HP by faction: Allies a bit tougher than Taliban
+  if role = "allied" [
+    set max-hit-points 110
+  ]
+  if role = "taliban" [
+    set max-hit-points 70
+  ]
   set hit_points max-hit-points
-  set morale (ifelse-value (role = "allied") [1.0] [0.9])
+  ;;set morale (ifelse-value (role = "allied") [1.0] [0.9])
 
   ;; ammo model including both reserve ammo + magazine ammo
   let load weapon-fighting-load weapon-design
@@ -99,21 +134,26 @@ to setup
     set is_cover false
   ]
   reset-ticks 
+  
+  set total-stoppages 0
+  set allied-stoppages 0
+  set taliban-stoppages 0
+  
   set training-levels [
     [0 0    0    0    0    0   ]  ;; basic
     [0 0.10 0.06 0.03 0.01 0.00]  ;; allied
     [0 0.06 0.03 0.01 0.00 0.00]  ;; taliban
   ]
 
-  set range-bands ["min" "cqc" "short" "medium" "long" "extreme"]
+  set range-bands ["cqc" "short" "medium" "long"]
   set weapon-specs [            
     ;; ["name" , [minimum,cqc,short,medium,long,extreme (distance brackets, meters)],max-rounds-per-tick, heat-per-shot, damage, fighting-load]
-    ["M4" [0 25 100 300 500 800] 12 1 1 360]
-    ["M249" [0 25 100 300 500 3600] 12 1 1 360]
+    ["M4" [0 500 600 3600] 10 5 1 360]
+    ["M249" [0 700 800 3600] 12 1 1 600]
     ;;["PKM" [0 25 100 300 500 800] 12 1 1 360]
-    ["M4A1" [0 25 100 300 500 800] 12 1 1 360]
-    ["XM7" [0 25 100 300 500 800] 12 1 1 360]
-    ["AK47" [0 25 75 250 400 600] 8 1 1 210]
+    ["M4A1" [0 500 600 3600] 20 1 1 360]
+    ;;["XM7" [0 25 100 300 500 800] 12 1 1 360]
+    ["AK47" [0 100 300 800] 8 1 1 210]
   ]
 
     
@@ -151,10 +191,10 @@ to setup
     [63 -33] [64 -33]
   ]
 
-  set ana-starting-points patches at-points [
-    [35 -17] [36 -17] [37 -17] [38 -17] [39 -17] [40 -17]
-    [35 -18] [36 -18] [37 -18] [38 -18] [39 -18] [40 -18]
-  ]
+;  set ana-starting-points patches at-points [
+;    [35 -17] [36 -17] [37 -17] [38 -17] [39 -17] [40 -17]
+;    [35 -18] [36 -18] [37 -18] [38 -18] [39 -18] [40 -18]
+;  ]
 
   set us-starting-points patches at-points [
     [37 -19] [38 -19] [39 -19] [40 -19]
@@ -223,17 +263,16 @@ to setup
   ]
 
   
-  create-taliban-army 103 [
-    move-to one-of taliban-starting-points
-    set color red
-    set size 1
-    set shape "square"
-    set base-speed 1
-    initialize-agent-parameters "taliban" "AK47" 2
-  ]
+ 
+;;##############################################################################################################################################  
+  let wave1-count round (taliban-count * wave1-fraction)
+  let wave2-count taliban-count - wave1-count
+  spawn-taliban wave1-count
+  set pending-wave2 wave2-count
 
 
-  create-us-army 82 [
+
+  create-us-army coalition-count [
     move-to one-of us-starting-points
     set color blue
     set size 1
@@ -245,7 +284,7 @@ to setup
   
 
   set tick-seconds 30
-  set cas-arrival-tick 120          ;; 1 hour @ 30s/tick
+  set cas-arrival-tick cas-arrival * 2          ;; 1 hour @ 30s/tick
   set taliban-start-count count turtles with [role = "taliban"]
   set allied-start-count  count turtles with [role = "allied"]
 
@@ -269,15 +308,21 @@ to paint-battlefield [data]  ;; data = list of rows, top->bottom; each row is li
   ]
 end
 
-
+;;#############################################################################################################################################################  GO
 to go
   ;; stop when CAS arrives or all of one side is dead
-  if ticks >= cas-arrival-tick [ stop ]
-  if taliban_casualties >= 103 [ stop ]
-  if allied_casualties >= 82 [ stop ]
+if (ticks = wave2-start-tick) and (pending-wave2 > 0) [
+  spawn-taliban pending-wave2
+  set pending-wave2 0
+]
+  
   
   ask turtles [
     check_survival
+      if withdrawing? [
+    taliban_ammo_out
+    stop
+  ]
 
     ;; weapon unjaming
     if jam-ticks > 0 [
@@ -370,6 +415,17 @@ to taliban_ammo_out
   
 end
 
+;;DEAD CODE - 
+to test-jam
+  ask n-of 5 us-army [
+    set current-weapon-heat 40  ;; well above 25
+    jam-check
+  ]
+end
+
+
+
+
 to combat-maintain
   ;; reduce suppression level and decrease heat val 
   set suppression suppression * 0.85
@@ -381,7 +437,7 @@ to combat-maintain
   if suppression <= 3 and posture = "Prone" and random-float 1 < 0.15 [ set posture "Crouch" ]
   if suppression < 1 and posture = "Crouch" and random-float 1 < 0.10 [ set posture "Upright" ]
 
-  update-morale
+  ;;update-morale
 
   ;; speed penalties (wounds + posture + suppression)
   let hp-frac hit_points / max-hit-points
@@ -391,63 +447,40 @@ to combat-maintain
   set base-speed nominal-speed * wound-mult * stance-mult * sup-mult
 end
 
-to update-morale
-  ;; Sets updated morale for units
-  let casualty-pressure 0
 
-  if role = "taliban" [
-    let denom max (list 1 taliban-start-count)
-    set casualty-pressure (taliban_casualties / denom)
+to-report clear-line-of-sight? [tgt]
+  let dist distance tgt
+  let steps ceiling dist
+  if steps <= 1 [
+    report true
   ]
+  let dx1 (([xcor] of tgt) - xcor) / steps
+  let dy1 (([ycor] of tgt) - ycor) / steps
 
-  if role = "allied" [
-    let denom max (list 1 allied-start-count)
-    set casualty-pressure (allied_casualties / denom)
+  let i 1
+  while [i < steps] [
+   
+    let p patch (xcor + dx1 * i) (ycor + dy1 * i)
+    if p != nobody [
+      let c [pcolor] of p
+      if (c = 4) or (c = yellow) [
+        report false
+      ]
+    ]
+    set i i + 1
   ]
-  set morale clamp (morale - 0.01 * (suppression / 10) - 0.04 * casualty-pressure) 0 1
+  report true
 end
 
-to-report should-withdraw?
-  if role != "taliban" [ report false ]
-  if morale < 0.25 [ report true ]
-  let denom max (list 1 taliban-start-count)
-  if (taliban_casualties / denom) > 0.35 [ report true ]
-
-  report false
+to-report speed-factor [c]
+  if c = 0 [ report 1.0 ]  ; slope 0° - 10°
+  if c = 1 [ report 0.45 ]  ; slope 11° - 20°
+  if c = 2 [ report 0.17 ]  ; slope 21° - 30°
+  if c = 3  [ report 0.06 ]  ; slope 31° - 40°
+  if c = 4 or c = yellow [ report 0 ]  ; slope 41°; impassable
+  report 1.0 ; default
 end
 
-to seek-cover
-  if patch-here != nobody [
-    if [is_cover] of patch-here or [pcolor] of patch-here = white [ stop ]
-  ]
-  let cover-patches patches in-radius 4 with [is_cover or pcolor = white]
-  if any? cover-patches [
-    let best min-one-of cover-patches [distance myself]
-    face best
-    move
-  ]
-end
-
-to start-reload
-  if current-weapon-ammo <= 0 [ stop ]
-  set reload-ticks weapon-reload-ticks weapon-design
-end
-
-to finish-reload
-  let to-load min (list (weapon-mag-size weapon-design) current-weapon-ammo)
-  set mag-rounds to-load
-  set current-weapon-ammo current-weapon-ammo - to-load
-end
-
-to jam-check
-  ;; Check if the weapon jams bc of heat 
-  if current-weapon-heat <= 25 [ stop ]
-  let prob clamp ((current-weapon-heat - 25) * 0.01) 0 0.15
-  if random-float 1 < prob [
-    set weapon-operational false
-    set jam-ticks 2 + random 3
-  ]
-end
 
 to-report hit-prob [tgt range-m band]
   let base (ifelse-value weapon-design = "M4" [0.10] [0.08])
@@ -460,25 +493,16 @@ to-report hit-prob [tgt range-m band]
 
   report clamp ( (base + train) * rmult * supmult * heatmult * stance * (1 - cover) ) 0 0.55
 end
+to-report should-withdraw?
+  ;; Only Taliban ever withdraw
+  if role != "taliban" [ report false ]
 
-to receive-fire [wep did-hit? range-m]
-  set suppression clamp (suppression + 0.12) 0 10
-
-  if did-hit? [
-    let dmg base-damage wep range-m
-    set dmg dmg * (1 - my-cover)
-    set hit_points hit_points - dmg
-
-    set suppression clamp (suppression + 0.6 + dmg / 40) 0 10
-    
-    ;; If wounded moderately
-    if hit_points < max-hit-points * 0.60 [ set posture "Crouch" ]
-    ;; If wounded badly
-    if hit_points < max-hit-points * 0.30 [ set posture "Prone"  ]
-
-    ;; Critical hit, instant kill
-    if random-float 1 < 0.03 and dmg > 25 [ set hit_points 0 ]
+  ;; number of friendly kia
+  if witnessed-kia >= 5 [
+    report true
   ]
+
+  report false
 end
 
 to-report my-cover
@@ -527,198 +551,18 @@ to-report weapon-mag-size [wep]
   if wep = "M4"   [ report 30 ]
   if wep = "AK47" [ report 30 ]
   if wep = "M249" [ report 200]
-  if wep = "XM7" [ report 30]
+  if wep = "M4A1" [ report 30] ;; adjust
+  
   report 30
 end
 
-to-report weapon-reload-ticks [wep]
+to-report weapon-reload-ticks [wep] ;; adjust
   if wep = "M4"   [ report 2 ]
   if wep = "AK47" [ report 3 ]
   if wep = "M249"   [ report 5 ]
-  if wep = "XM7" [ report 2 ]
+  if wep = "M4A1" [ report 2 ]
   
   report 3
-end
-
-
-to allied_ammo_out
-  if [is_ressuply] of patch-here [
-    do-resupply
-    stop
-  ]
-
-  let resupply-patches patches with [is_ressuply]
-  if any? resupply-patches [
-    let nearest min-one-of resupply-patches [distance myself]
-    face nearest
-    move
-    if [is_ressuply] of patch-here [ do-resupply ]
-  ]
-  stop
-end
-
-to do-resupply
-  let load weapon-fighting-load weapon-design
-  set current-weapon-ammo load
-  set mag-rounds min (list (weapon-mag-size weapon-design) current-weapon-ammo)
-  set current-weapon-ammo current-weapon-ammo - mag-rounds
-end
-
-
-to check_survival 
-  if (hit_points <= 0) [
-    ;; Remove agent, increment count
-      if role = "allied" [
-        set allied_casualties allied_casualties + 1          
-      ]
-    
-      if role = "taliban" [
-        set taliban_casualties taliban_casualties + 1
-      ]
-      die
-      stop
-    ]
-end
-
-to attack
-  if hit_points <= 0 [ stop ]
-
-  combat-maintain
-
-  ;; Taliban withdrawal once low morale
-  if should-withdraw? [
-    set posture "Upright"
-    taliban_ammo_out   ;; Has taliban units run for the hills
-    stop
-  ]
-
-  ;; reload?
-  if reload-ticks > 0 [
-    set reload-ticks reload-ticks - 1
-    if reload-ticks = 0 [ finish-reload ]
-    stop
-  ]
-
-  ;; check if weapon jammed
-  if not weapon-operational [ stop ]
-
-  ;; don't raise up if suppressed (most likely)
-  if suppression > 4 and random-float 1 < 0.8 [
-    set posture "Prone"
-    seek-cover
-    stop
-  ]
-
-  let enemies nobody
-  if role = "taliban" [ set enemies turtles with [hit_points > 0 and role = "allied"] ]
-  if role = "allied"  [ set enemies turtles with [hit_points > 0 and role = "taliban"] ]
-
-  ;; get weapon range in patches
-  let max-range-m last (weapon-brackets weapon-design)
-  let range-in-patches max-range-m / 7.8125
-
-  ;; determine visible enemies
-  let enemies-in-range enemies in-radius range-in-patches
-  let visible-enemies no-turtles
-  ask enemies-in-range [
-    if [clear-line-of-sight? self] of myself [
-      set visible-enemies (turtle-set visible-enemies self)
-    ]
-  ]
-
-  ;; if no targets, prone and go for cover if shot at
-  if not any? visible-enemies [
-    if suppression > 3 [
-      set posture "Prone"
-      seek-cover
-      stop
-    ]
-    stop
-  ]
-
-  let target min-one-of visible-enemies [distance myself]
-  let engagement-range-m (distance target) * 7.8125
-  let band weapon-range-band weapon-design engagement-range-m
-  if band = "beyond" [ stop ]
-
-  ;; burst sizing (big bursts if enemy is close)
-  let burst 1
-  if engagement-range-m < 75  [ set burst 3 ]
-  if engagement-range-m >= 75 and engagement-range-m < 250 [ set burst 2 ]
-  
-  let shots min (list burst (weapon-max-rounds-per-tick weapon-design) mag-rounds)
-
-  ;; if empty mag, reload
-  if shots <= 0 [
-    start-reload
-    stop
-  ]
-
-  ;; shoot
-  repeat shots [
-    jam-check
-    if not weapon-operational [ stop ]
-
-    set mag-rounds mag-rounds - 1
-    set current-weapon-heat current-weapon-heat + weapon-heat-per-shot weapon-design
-
-    let p hit-prob target engagement-range-m band
-    let did-hit? (random-float 1 < p)
-
-    ask target [ receive-fire weapon-design did-hit? engagement-range-m ]
-
-    ;; if mag dry mid-burst, start reload
-    if mag-rounds <= 0 [
-      if current-weapon-ammo > 0 [ start-reload ]
-      stop
-    ]
-  ]
-  stop
-end
-
-to move_default
-  let cop-patches patches with [ is_COP = true ]
-  if any? cop-patches [
-    let target min-one-of cop-patches [ distance myself ]
-    face target
-  ]
-  move
-  stop
-  
-end
-
-
-to-report clear-line-of-sight? [tgt]
-  let dist distance tgt
-  let steps ceiling dist
-  if steps <= 1 [
-    report true
-  ]
-  let dx1 (([xcor] of tgt) - xcor) / steps
-  let dy1 (([ycor] of tgt) - ycor) / steps
-
-  let i 1
-  while [i < steps] [
-   
-    let p patch (xcor + dx1 * i) (ycor + dy1 * i)
-    if p != nobody [
-      let c [pcolor] of p
-      if (c = 4) or (c = yellow) [
-        report false
-      ]
-    ]
-    set i i + 1
-  ]
-  report true
-end
-
-to-report speed-factor [c]
-  if c = 0 [ report 1.0 ]  ; slope 0° - 10°
-  if c = 1 [ report 0.45 ]  ; slope 11° - 20°
-  if c = 2 [ report 0.17 ]  ; slope 21° - 30°
-  if c = 3  [ report 0.06 ]  ; slope 31° - 40°
-  if c = 4 or c = yellow [ report 0 ]  ; slope 41°; impassable
-  report 1.0 ; default
 end
 
 ;;Logic for accessing specs of an agent's current weapon
@@ -772,6 +616,322 @@ to-report weapon-range-band [wep-name target-range]
 
   report item range-indx range-bands
 end
+
+
+to seek-cover
+  if patch-here != nobody [
+    if [is_cover] of patch-here or [pcolor] of patch-here = white [ stop ]
+  ]
+  let cover-patches patches in-radius 4 with [is_cover or pcolor = white]
+  if any? cover-patches [
+    let best min-one-of cover-patches [distance myself]
+    face best
+    move
+  ]
+end
+
+to start-reload
+  if current-weapon-ammo <= 0 [ stop ]
+  set reload-ticks weapon-reload-ticks weapon-design
+end
+
+to finish-reload
+  let to-load min (list (weapon-mag-size weapon-design) current-weapon-ammo)
+  set mag-rounds to-load
+  set current-weapon-ammo current-weapon-ammo - to-load
+end
+
+to jam-check
+  if current-weapon-heat <= 15 [ stop ]
+
+  let base-prob ((current-weapon-heat - 15) * 0.02)
+  let prob base-prob
+
+  if role = "allied" [
+    set prob prob * 1.8  ;;fudge to get to real world numbers
+  ]
+
+  set prob clamp prob 0 0.25
+
+  if random-float 1 < prob [
+        ;; catastrophic failure at very high heat, jamming was not effecting outcome
+    if current-weapon-heat > 45 and random-float 1 < 0.3 [
+      ;; effectively out for the rest of the battle
+      set jam-ticks 9999
+      set weapon-operational false
+      set total-stoppages total-stoppages + 1
+      if role = "allied" [ set allied-stoppages allied-stoppages + 1 ]
+      if role = "taliban" [ set taliban-stoppages taliban-stoppages + 1 ]
+      stop
+    ]
+    set weapon-operational false
+    let base-downtime (6 + random 6)                    ;; 3–6 ticks
+    let heat-bonus floor (current-weapon-heat / 8)      ;; +1 tick per ~8 heat
+    set jam-ticks base-downtime + heat-bonus
+
+    set total-stoppages total-stoppages + 1
+    if role = "allied" [
+      set allied-stoppages allied-stoppages + 1
+    ]
+    if role = "taliban" [
+      set taliban-stoppages taliban-stoppages + 1
+    ]
+  ]
+end
+
+
+
+
+to receive-fire [wep did-hit? range-m]  ;;###########################
+
+  if role = "allied" [
+    ;; abstraction, the US aren't as heavily effected due to cover / training
+    set suppression clamp (suppression + 0.02) 0 10
+  ]
+  if role = "taliban" [
+    ;; need "keep them pinned" to work
+    set suppression clamp (suppression + 0.18) 0 10
+  ]
+
+  if did-hit? [
+    let dmg base-damage wep range-m
+    ;; still torn on cover
+    set dmg dmg * (1 - my-cover)
+    set hit_points hit_points - dmg
+
+    ;; extra suppression from actually being hit with a bullet:
+    if role = "taliban" [
+      set suppression clamp (suppression + 0.7 + dmg / 40) 0 10
+    ]
+    if role = "allied" [
+      ;; Allies notice being hit, but don't melt down
+      set suppression clamp (suppression + 0.2) 0 10
+    ]
+
+    ;; wounded moderately
+    if hit_points < max-hit-points * 0.60 [ set posture "Crouch" ]
+    ;; wounded badly
+    if hit_points < max-hit-points * 0.30 [ set posture "Prone"  ]
+
+    ;; Critical hit, instant kill
+    if random-float 1 < 0.03 and dmg > 25 [ set hit_points 0 ]
+  ]
+end
+
+
+
+
+
+to allied_ammo_out
+  if [is_ressuply] of patch-here [
+    do-resupply
+    stop
+  ]
+
+  let resupply-patches patches with [is_ressuply]
+  if any? resupply-patches [
+    let nearest min-one-of resupply-patches [distance myself]
+    face nearest
+    move
+    if [is_ressuply] of patch-here [ do-resupply ]
+  ]
+  stop
+end
+
+to do-resupply
+  let load weapon-fighting-load weapon-design
+  set current-weapon-ammo load
+  set mag-rounds min (list (weapon-mag-size weapon-design) current-weapon-ammo)
+  set current-weapon-ammo current-weapon-ammo - mag-rounds
+end
+
+
+to check_survival 
+  if hit_points > 0 [ stop ]
+  ;; turtle is "dead"
+
+ 
+  if role = "allied" [
+    set allied_casualties allied_casualties + 1          
+  ]
+
+  if role = "taliban" [
+    set taliban_casualties taliban_casualties + 1
+
+    ;; Taliban nearby witness this KIA 
+    let shock-radius 5
+    ask other turtles with [
+      role = "taliban" and
+      hit_points > 0 and
+      distance myself < shock-radius
+    ] [
+      set witnessed-kia witnessed-kia + 1
+    ]
+  ]
+
+  die
+  stop
+end
+
+
+
+
+to attack ;; ######################################################################################################
+  if hit_points <= 0 [ stop ]
+
+  combat-maintain
+
+
+  if should-withdraw? [
+     ;;DEBUG report
+;    show (word
+;      "TALIBAN BREAK: turtle "
+;      who
+;      " witnessed-deaths="
+;      witnessed-kia
+;      " suppression="
+;      precision suppression 2
+;      " at tick "
+;      ticks
+;    )
+    set posture "Upright"
+    ;;taliban_ammo_out   ;; Has taliban units run for the hills
+    set withdrawing? true
+    stop
+  ]
+
+  ;; reload?
+  if reload-ticks > 0 [
+    set reload-ticks reload-ticks - 1
+    if reload-ticks = 0 [ finish-reload ]
+    stop
+  ]
+
+  ;; check if weapon jammed
+  if not weapon-operational [ stop ]
+
+  ;; don't raise up if suppressed (most likely)
+  if suppression > 2 and random-float 1 < 0.8 [
+    set posture "Prone"
+    seek-cover
+    stop
+  ]
+
+  let enemies nobody
+  if role = "taliban" [ set enemies turtles with [hit_points > 0 and role = "allied"] ]
+  if role = "allied"  [ set enemies turtles with [hit_points > 0 and role = "taliban"] ]
+
+  ;; get weapon range in patches
+  let max-range-m last (weapon-brackets weapon-design)
+  let range-in-patches max-range-m / 7.8125
+
+  ;; determine visible enemies
+  let enemies-in-range enemies in-radius range-in-patches
+  let visible-enemies no-turtles
+  ask enemies-in-range [
+    if [clear-line-of-sight? self] of myself [
+      set visible-enemies (turtle-set visible-enemies self)
+    ]
+  ]
+
+  ;; if no targets, prone and go for cover if shot at
+  if not any? visible-enemies [
+    if suppression > 3 [
+      set posture "Prone"
+      seek-cover
+      stop
+    ]
+    stop
+  ]
+
+  let target min-one-of visible-enemies [distance myself]
+  let engagement-range-m (distance target) * 7.8125
+  let band weapon-range-band weapon-design engagement-range-m
+  if band = "beyond" [ stop ]
+
+  ;; burst sizing (big bursts if enemy is close)
+  let burst 1
+  if engagement-range-m < 75  [ set burst 3 ]
+  if engagement-range-m >= 75 and engagement-range-m < 250 [ set burst 2 ]
+  
+  let shots min (list burst (weapon-max-rounds-per-tick weapon-design) mag-rounds)
+
+  ;; if empty mag, reload
+  if shots <= 0 [
+    start-reload
+    stop
+  ]
+
+  ;; shoot
+repeat shots [
+    jam-check
+    if not weapon-operational [ stop ]
+
+    set mag-rounds mag-rounds - 1
+    set current-weapon-heat current-weapon-heat + weapon-heat-per-shot weapon-design
+
+    let p hit-prob target engagement-range-m band
+
+    
+    
+    if role = "allied" [
+      ;;  complete miss / near miss / hit
+      let r random-float 1
+      let p-hit p
+      ;; near-miss band between p and about 3p 
+      let p-near min (list (p * 3) 0.95) 
+
+      if r < p-hit [
+        ;; hit normal damage + strong suppression (don't want to change John's logic)
+        ask target [
+          receive-fire weapon-design true engagement-range-m
+        ]
+      ]
+      
+      if r >= p-hit and r < p-near [
+        ;; splash suppression to nearby Taliban
+        ask turtles with [role = "taliban" and hit_points > 0] in-radius 1 [
+          set suppression clamp (suppression + 0.15) 0 10
+        ]
+      ]
+      if r >= p-near [
+
+        ask target [
+          receive-fire weapon-design false engagement-range-m
+        ]
+      ]
+    ]
+
+    if role = "taliban" [
+      ;; keeping original implementation since suppression (volume of fire) is more key to abstracting US troops
+      let did-hit? (random-float 1 < p)
+      ask target [
+        receive-fire weapon-design did-hit? engagement-range-m
+      ]
+    ]
+
+    ;; if mag dry mid-burst, start reload
+    if mag-rounds <= 0 [
+      if current-weapon-ammo > 0 [ start-reload ]
+      stop
+    ]
+  ]
+  stop
+end
+
+to move_default
+  let cop-patches patches with [ is_COP = true ]
+  if any? cop-patches [
+    let target min-one-of cop-patches [ distance myself ]
+    face target
+  ]
+  move
+  stop
+  
+end
+
+
+
 
 to-report battlefield-data
   report
@@ -841,8 +1001,6 @@ end
     <chooser x="35" y="155" height="60" variable="allied_weapon_selection" current="0" width="255" display="allied_weapon_selection">
       <choice type="string" value="M4"></choice>
       <choice type="string" value="M4A1"></choice>
-      <choice type="string" value="M249"></choice>
-      <choice type="string" value="XM7"></choice>
     </chooser>
     <plot x="35" autoPlotX="true" yMax="10.0" autoPlotY="true" y="415" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="260" display="Taliban Casualties">
       <setup></setup>
@@ -864,6 +1022,15 @@ end
       </pen>
     </plot>
     <monitor x="160" precision="17" y="85" height="60" fontSize="11" width="130" display="Insurgent Casualties">taliban_casualties</monitor>
+    <button x="370" y="750" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="65">test-jam</button>
+    <monitor x="380" precision="17" y="610" height="60" fontSize="11" width="130" display="Coalition Stoppages">allied-stoppages</monitor>
+    <monitor x="530" precision="17" y="610" height="60" fontSize="11" width="125" display="Taliban Stoppages">taliban-stoppages</monitor>
+    <slider x="35" step="1" y="605" max="120" width="250" display="taliban-count" height="50" min="10" direction="Horizontal" default="120.0" variable="taliban-count"></slider>
+    <slider x="35" step="1" y="675" max="180" width="250" display="cas-arrival" height="50" min="60" direction="Horizontal" default="117.0" variable="cas-arrival" units="minutes"></slider>
+    <slider x="35" step="0.01" y="740" max="1" width="250" display="wave1-fraction" height="50" min="0.01" direction="Horizontal" default="0.56" variable="wave1-fraction"></slider>
+    <slider x="35" step="1" y="805" max="360" width="250" display="wave2-start-tick" height="50" min="1" direction="Horizontal" default="40.0" variable="wave2-start-tick"></slider>
+    <slider x="35" step="1" y="870" max="75" width="250" display="coalition-count" height="50" min="10" direction="Horizontal" default="75.0" variable="coalition-count"></slider>
+    <monitor x="500" precision="17" y="735" height="60" fontSize="11" width="130" display="Insurgent Count">count taliban-army</monitor>
   </widgets>
   <info>## WHAT IS IT?
 
